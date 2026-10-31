@@ -107,7 +107,7 @@ cache `17693480cbb8d0ebab55adf4728717ce004957666d6ad47bfb9dc46d4c3716c0`
 | XNU patches | kernel build | `src/UniXNU/out/.../gta4l/xnu-inputs.json` | 59 patches, including device-repo `patches/xnu/gta4l-sdhci-handoff-audit.patch` `2b7668e643d248e5191c6b84dd740e54ad67b9a05c9d7006ad23f7bfc806af9f` | present-out | Current build record; no equivalent record was found in the evidence directories for the v5 or host-init kernels `[S]/[U]` |
 | Kernel link archive | kernel build | `libGta4lSdhciSnapshot.a` | audit evidence `ef6646ce0a2deb55d7e63bb403638e00734a13154b1d478cfd695cd447b8f56a`; current build `8db3f178725bfdede748b7dab210883905de981af94a2b097441ea765a3989b8` | present-out | Built from `kits/gta4l/Gta4lSdhciSnapshot.c`, `Gta4lSdhciHandoffAudit.c` and `Gta4lSdhciHostInit.c`; current archive contains three objects, the audit archive two `[S]` |
 | Device configuration | payload build | `board.toml` | `505bef50b59b1cd9324ea88244891d91db9b6f157c19702a1a29e8b511fb31ed` | tracked | `[payload.adt]`, `[payload]` kernel args, `[[bootimg.dtb_node]]` `[S]` |
-| Kernel configuration | kernel build | `configs/gta4l_defconfig` | `ef3fb50875897b5a02a18d58faa4b1b07ee3b3707c9810543f5781a747d1195a` | tracked | `CONFIG_XNU_EXTRA_LD_ARCHIVES` force-loads the SDHCI archive `[S]` |
+| Kernel configuration | kernel build | `configs/gta4l_defconfig` | `cdc698cb36e26413b61ca30dc2314e700f257f89f563f3e3d5ee3a0440e3b864` | tracked | `CONFIG_XNU_EXTRA_LD_ARCHIVES` force-loads the SDHCI snapshot and eMMC probe archives `[S]` |
 | Resolved source set | fetch/build | `unixnu.lock` | `fc1bf57c489ba2809d471fde20a550424e35789a78a95977e917e84255e89550` | tracked | XNU, sm6115, libdispatch and the other pinned sources `[S]` |
 | Feed configuration | fetch/build | `feeds.toml` | `3be886c449404f678c0e52034bf5d0b3232f07227be7e15af082c2e377528aca` | tracked | SM6115 source pin `[S]` |
 | UniXNU checkout | payload build | `src/UniXNU` | commit `6ee4ada8a82f5bd2d9032b4d7cf033e878e0551f` | present-sibling | Detached; supplies `unixnu`, payload builder and boot-image helper `[S]` |
@@ -231,9 +231,35 @@ payload hash. Replay inputs:
 
 | Script | SHA-256 |
 | --- | --- |
-| `scripts/package-gta4l-diagnostic.py` | `2f7c998bad01980e9298a60b28ac8a5b3dadcbd0051fd4289c00ff7d20e0afa8` |
+| `scripts/build-gta4l-diagnostic-payload.py` | `3f412a7f257dab87b7b23120b2131aa609ab7add92306f00caca5959d74e029e` |
+| `scripts/package-gta4l-diagnostic.py` | `77b7f38b55b3a47d865c9180b6c9cdcbf0e4c3039c5bd1a471ac21492440ae83` |
 | `scripts/check-gta4l-boot-image.py` | `879ee0ede5ddbebe4e24915c8720fa40a7b1e253642f6fd2a4d4dff937586bf4` |
-| `scripts/check-gta4l-payload.py` | `3c5a5723ea1cc85946dbd48bb916b2aa2e2fcb9ca584dc49caee598a6bd62930` |
+| `scripts/check-gta4l-payload.py` | `993429b25455041a0cddfec454bb23caa417289e5a3d359950c42db2e5802e49` |
+
+The diagnostic wrapper also accepts `emmc-probe-1`, `emmc-probe-2` and
+`emmc-probe-3`, mapping to `gta4l-emmc-probe=1/2/3`. The stage-2 image built on
+2026-10-31 is
+`out/gta4l/ram-root-emmc-probe-evidence/boot-ram-root-emmc-probe-stage2.img`
+(85,688,320 bytes, SHA-256
+`4f2252df6bbd5d9c7f05ef97c0041da9acdc47212debf31a10334aefa45a12e5`). Its payload
+is SHA-256 `2953e90220f1e2d9341fc154f3f2eb6523ab2539be68404a3beffa8ee4702633`;
+the payload contract is 7/7 and the boot-image gate is 18/18. It was built with
+`hardware_tested=false`; that manifest is retained as build provenance. The
+image was subsequently written to BOOT only for the stage-2 host run on
+2026-10-31 (readback matched and recovery stayed byte-identical); see
+`docs/emmc-driver.md` §5.2.
+
+The stage-3 image built the same day is
+`out/gta4l/ram-root-emmc-probe-stage3-evidence/boot-ram-root-emmc-probe-stage3.img`
+(85,688,320 bytes, SHA-256
+`88b4d28607b371fe008922131c6ee51f27f73da30249fd4a07969f770fa90d87`) on the
+unchanged kernel; its payload is SHA-256
+`4028e432f200dc1069a50f1baa6786d2f4861b187f2c5a0bd126bb20f5a9cd41`, with
+`gta4l-emmc-probe=3`, payload contract 7/7 and boot-image gate 18/18. It was
+written to BOOT only for the stage-3 identification run on 2026-10-31
+(readback matched and recovery stayed byte-identical); that run stopped at a
+command CRC error before the identification report. See
+`docs/emmc-driver.md` §5.3.
 
 This establishes the packaging step only. The inputs are existing artifacts;
 the replay does not reproduce the kernel or firmware.
