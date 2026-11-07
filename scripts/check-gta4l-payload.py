@@ -23,14 +23,32 @@ TOML_MEMBER = '::/EFI/UniXNU/unixnu.toml'
 RAMDISK_MEMBER = PAYLOAD_DIR + '/scratch-data.img'
 TRUST_MEMBER = PAYLOAD_DIR + '/kernel.macho.trustcache'
 ADDON_MEMBER = PAYLOAD_DIR + '/kernel.macho.gpuaddon'
-DIAGNOSTICS = ('gta4l-sdhci-host-init=1',
-               'gta4l-sdhci-audit=1',
-               'gta4l-sdhci-snapshot=1')
 DIAGNOSTIC_NAMES = {
     'host-init': 'gta4l-sdhci-host-init=1',
     'audit': 'gta4l-sdhci-audit=1',
     'snapshot': 'gta4l-sdhci-snapshot=1',
+    'emmc-probe-1': 'gta4l-emmc-probe=1',
+    'emmc-probe-2': 'gta4l-emmc-probe=2',
+    'emmc-probe-3': 'gta4l-emmc-probe=3',
+    'emmc-probe-4': 'gta4l-emmc-probe=4',
+    'emmc-probe-5': 'gta4l-emmc-probe=5',
+    'emmc-probe-6': 'gta4l-emmc-probe=6',
+    'emmc-probe-7': 'gta4l-emmc-probe=7',
+    'emmc-probe-8': 'gta4l-emmc-probe=8',
+    'emmc-probe-9': 'gta4l-emmc-probe=9',
+    'emmc-probe-10': 'gta4l-emmc-probe=10',
+    'emmc-probe-11': 'gta4l-emmc-probe=11',
+    'emmc-probe-12': 'gta4l-emmc-probe=12',
+    'emmc-probe-13': 'gta4l-emmc-probe=13',
+    'emmc-probe-14': 'gta4l-emmc-probe=14',
+    'emmc-probe-15': 'gta4l-emmc-probe=15',
+    'emmc-probe-16': 'gta4l-emmc-probe=16',
+    'emmc-probe-17': 'gta4l-emmc-probe=17',
 }
+
+# Derived from the name map so a new stage cannot be added to one list and
+# forgotten in the other.
+DIAGNOSTICS = tuple(DIAGNOSTIC_NAMES.values())
 
 
 def run_tool(*args):
@@ -177,7 +195,8 @@ def check(image, expected='any'):
                     addon_present == ('GpuAddon' in memory_map))
 
             args = xnu_args(toml_path)
-            found = [item for item in DIAGNOSTICS if item in args]
+            tokens = args.split()
+            found = [item for item in DIAGNOSTICS if item in tokens]
             require('exactly_one_diagnostic_argument', len(found) == 1)
             if expected != 'any':
                 require(f'{expected}_diagnostic_selected',
@@ -194,7 +213,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--payload')
     parser.add_argument('--expect-diagnostic',
-                        choices=('any', 'host-init', 'audit', 'snapshot'),
+                        choices=('any', 'host-init', 'audit', 'snapshot',
+                                 'emmc-probe-1', 'emmc-probe-2',
+                                 'emmc-probe-3', 'emmc-probe-4',
+                                 'emmc-probe-5', 'emmc-probe-6', 'emmc-probe-7',
+                                 'emmc-probe-8', 'emmc-probe-9',
+                                 'emmc-probe-10', 'emmc-probe-11',
+                                 'emmc-probe-12', 'emmc-probe-13',
+                                 'emmc-probe-14', 'emmc-probe-15',
+                                 'emmc-probe-16', 'emmc-probe-17'),
                         default='any',
                         help='require this board diagnostic argument')
     parser.add_argument('--json', action='store_true')

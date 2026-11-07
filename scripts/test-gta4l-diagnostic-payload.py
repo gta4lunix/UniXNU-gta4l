@@ -192,8 +192,93 @@ def test_missing_kernel(base):
     print('PASS missing kernel is rejected before the build')
 
 
+def check_emmc_probe(base, number):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    name = f'emmc-probe-{number}'
+    argument = f'gta4l-emmc-probe={number}'
+    args[args.index('--diagnostic') + 1] = name
+    code = run(module, [
+        *args,
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    assert kernel_args[-1] == argument
+    assert json.loads(manifest.read_text())['diagnostic_argument'] == \
+        argument
+    print(f'PASS {name} maps to {argument}')
+
+
+def test_emmc_probe_4(base):
+    check_emmc_probe(base, 4)
+
+
+def test_emmc_probe_5(base):
+    check_emmc_probe(base, 5)
+
+
+def test_emmc_probe_6(base):
+    check_emmc_probe(base, 6)
+
+
+def test_emmc_probe_7(base):
+    check_emmc_probe(base, 7)
+
+
+def test_emmc_probe_8(base):
+    check_emmc_probe(base, 8)
+
+
+def test_emmc_probe_9(base):
+    check_emmc_probe(base, 9)
+
+
+def test_emmc_probe_10(base):
+    check_emmc_probe(base, 10)
+
+
+def test_emmc_probe_11(base):
+    check_emmc_probe(base, 11)
+
+
+def test_emmc_probe_12(base):
+    check_emmc_probe(base, 12)
+
+
+def test_emmc_probe_13(base):
+    check_emmc_probe(base, 13)
+
+
+def test_emmc_probe_14(base):
+    check_emmc_probe(base, 14)
+
+
+def test_emmc_probe_15(base):
+    check_emmc_probe(base, 15)
+
+
+def test_emmc_probe_16(base):
+    check_emmc_probe(base, 16)
+
+
 def main():
-    tests = (test_explicit_kernel, test_default_kernel, test_missing_kernel)
+    tests = (test_explicit_kernel, test_default_kernel, test_missing_kernel,
+             test_emmc_probe_4, test_emmc_probe_5, test_emmc_probe_6,
+             test_emmc_probe_7, test_emmc_probe_8, test_emmc_probe_9,
+             test_emmc_probe_10, test_emmc_probe_11, test_emmc_probe_12,
+             test_emmc_probe_13, test_emmc_probe_14, test_emmc_probe_15,
+             test_emmc_probe_16)
     for test in tests:
         with tempfile.TemporaryDirectory(prefix='gta4l-payload-test-') as tmp:
             test(Path(tmp))

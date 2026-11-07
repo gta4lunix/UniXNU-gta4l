@@ -98,7 +98,16 @@ def main():
                         default=DEFAULT_FIRMWARE_SHA256)
     parser.add_argument('--payload-sha256', required=True)
     parser.add_argument('--expect-diagnostic',
-                        choices=('any', 'host-init', 'audit', 'snapshot'),
+                        choices=('any', 'host-init', 'audit', 'snapshot',
+                                 'emmc-probe-1', 'emmc-probe-2',
+                                 'emmc-probe-3', 'emmc-probe-4',
+                                 'emmc-probe-5', 'emmc-probe-6',
+                                 'emmc-probe-7', 'emmc-probe-8',
+                                 'emmc-probe-9', 'emmc-probe-10',
+                                 'emmc-probe-11', 'emmc-probe-12',
+                                 'emmc-probe-13', 'emmc-probe-14',
+                                 'emmc-probe-15', 'emmc-probe-16',
+                                 'emmc-probe-17'),
                         default='any',
                         help='require this board diagnostic argument in the payload')
     parser.add_argument('--force', action='store_true')

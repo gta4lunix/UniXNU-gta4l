@@ -26,6 +26,23 @@ DIAGNOSTICS = {
     'host-init': 'gta4l-sdhci-host-init=1',
     'audit': 'gta4l-sdhci-audit=1',
     'snapshot': 'gta4l-sdhci-snapshot=1',
+    'emmc-probe-1': 'gta4l-emmc-probe=1',
+    'emmc-probe-2': 'gta4l-emmc-probe=2',
+    'emmc-probe-3': 'gta4l-emmc-probe=3',
+    'emmc-probe-4': 'gta4l-emmc-probe=4',
+    'emmc-probe-5': 'gta4l-emmc-probe=5',
+    'emmc-probe-6': 'gta4l-emmc-probe=6',
+    'emmc-probe-7': 'gta4l-emmc-probe=7',
+    'emmc-probe-8': 'gta4l-emmc-probe=8',
+    'emmc-probe-9': 'gta4l-emmc-probe=9',
+    'emmc-probe-10': 'gta4l-emmc-probe=10',
+    'emmc-probe-11': 'gta4l-emmc-probe=11',
+    'emmc-probe-12': 'gta4l-emmc-probe=12',
+    'emmc-probe-13': 'gta4l-emmc-probe=13',
+    'emmc-probe-14': 'gta4l-emmc-probe=14',
+    'emmc-probe-15': 'gta4l-emmc-probe=15',
+    'emmc-probe-16': 'gta4l-emmc-probe=16',
+    'emmc-probe-17': 'gta4l-emmc-probe=17',
 }
 
 

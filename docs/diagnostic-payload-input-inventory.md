@@ -60,7 +60,7 @@ baseline path explicitly.
 | Booted outer FV / raw FD | 3,145,728 | `42f900a38e582026f5daabb70b19b340f0697f2f90b0248c53ecebc07f4186e9` | embedded, no standalone file | Recoverable from the v5 image; see §7 `[S]` |
 | Booted inner FV | 8,339,456 | `3bb7847a9f9abeec1bb70d812fe58ad014ae27a3254465e2da2a753cef99a8bd` | embedded | GUIDed LZMA section of the outer FV `[S]` |
 | Appended boot DTB | 316,317 | `dc4c719d06e408654680524af26052d609baa14dd57da9082fd9f35c6509de9e` | present-out | `out/gta4l/ram-root-sdhci-audit-evidence/boot-dtb-v5.bin`; patched from `e2ae2d67...` `[S]` |
-| Unpatched boot DTB | 316,317 | `e2ae2d671e28d9e295cc98ea3573ee6b41c46f5402e0769a417228d9fd8927fd` | present-sibling | `src/Mu-Silicium/Resources/DTBs/gta4l.dtb`; `board.toml` `[[bootimg.dtb_node]]` applies the framebuffer and touch-controller edits `[S]` |
+| Unpatched boot DTB | 4,619,189 | `e2ae2d671e28d9e295cc98ea3573ee6b41c46f5402e0769a417228d9fd8927fd` | present-sibling | `src/Mu-Silicium/Resources/DTBs/gta4l.dtb`; the first FDT has `totalsize` 316,095 and further FDT images follow. `[[bootimg.dtb_node]]` applies the framebuffer and touch-controller edits to the first image; `bootimg`/`fdtput` truncates it to 316,317 bytes. Provenance and reproduction: `docs/boot-dtb-provenance.md` `[S]` |
 | Ramdisk (payload) | 83,886,080 | `a390c68ae1d4650a83c49f72631970d829d8edfe1a0239ce347cfc27f646951c` | present-out | v5 payload image `[S]` |
 
 The raw FD and inner FV hashes are recorded again in
@@ -107,7 +107,7 @@ cache `17693480cbb8d0ebab55adf4728717ce004957666d6ad47bfb9dc46d4c3716c0`
 | XNU patches | kernel build | `src/UniXNU/out/.../gta4l/xnu-inputs.json` | 59 patches, including device-repo `patches/xnu/gta4l-sdhci-handoff-audit.patch` `2b7668e643d248e5191c6b84dd740e54ad67b9a05c9d7006ad23f7bfc806af9f` | present-out | Current build record; no equivalent record was found in the evidence directories for the v5 or host-init kernels `[S]/[U]` |
 | Kernel link archive | kernel build | `libGta4lSdhciSnapshot.a` | audit evidence `ef6646ce0a2deb55d7e63bb403638e00734a13154b1d478cfd695cd447b8f56a`; current build `8db3f178725bfdede748b7dab210883905de981af94a2b097441ea765a3989b8` | present-out | Built from `kits/gta4l/Gta4lSdhciSnapshot.c`, `Gta4lSdhciHandoffAudit.c` and `Gta4lSdhciHostInit.c`; current archive contains three objects, the audit archive two `[S]` |
 | Device configuration | payload build | `board.toml` | `505bef50b59b1cd9324ea88244891d91db9b6f157c19702a1a29e8b511fb31ed` | tracked | `[payload.adt]`, `[payload]` kernel args, `[[bootimg.dtb_node]]` `[S]` |
-| Kernel configuration | kernel build | `configs/gta4l_defconfig` | `ef3fb50875897b5a02a18d58faa4b1b07ee3b3707c9810543f5781a747d1195a` | tracked | `CONFIG_XNU_EXTRA_LD_ARCHIVES` force-loads the SDHCI archive `[S]` |
+| Kernel configuration | kernel build | `configs/gta4l_defconfig` | `92e78f49383fc97dab2379f0ede7437db509f535b74f2482d29a668c2e67ce26` | tracked | `CONFIG_XNU_EXTRA_LD_ARCHIVES` force-loads the SDHCI snapshot plus the eMMC core and probe archives `[S]` |
 | Resolved source set | fetch/build | `unixnu.lock` | `fc1bf57c489ba2809d471fde20a550424e35789a78a95977e917e84255e89550` | tracked | XNU, sm6115, libdispatch and the other pinned sources `[S]` |
 | Feed configuration | fetch/build | `feeds.toml` | `3be886c449404f678c0e52034bf5d0b3232f07227be7e15af082c2e377528aca` | tracked | SM6115 source pin `[S]` |
 | UniXNU checkout | payload build | `src/UniXNU` | commit `6ee4ada8a82f5bd2d9032b4d7cf033e878e0551f` | present-sibling | Detached; supplies `unixnu`, payload builder and boot-image helper `[S]` |
@@ -231,9 +231,136 @@ payload hash. Replay inputs:
 
 | Script | SHA-256 |
 | --- | --- |
-| `scripts/package-gta4l-diagnostic.py` | `2f7c998bad01980e9298a60b28ac8a5b3dadcbd0051fd4289c00ff7d20e0afa8` |
+| `scripts/build-gta4l-diagnostic-payload.py` | `f7370d869eb5102e083f8e0bda64640bcffc0cbd15587efeb6dc21c1b7c08230` |
+| `scripts/package-gta4l-diagnostic.py` | `ad0924ce67e7066f8fdf912d49fd5182361c58dc148897bbce1bd1323579935f` |
 | `scripts/check-gta4l-boot-image.py` | `879ee0ede5ddbebe4e24915c8720fa40a7b1e253642f6fd2a4d4dff937586bf4` |
-| `scripts/check-gta4l-payload.py` | `3c5a5723ea1cc85946dbd48bb916b2aa2e2fcb9ca584dc49caee598a6bd62930` |
+| `scripts/check-gta4l-payload.py` | `24178635b2e0fa1b8d17d901a17c30771f4a10b80767fe7969ef8cc765b4f34c` |
+
+The diagnostic wrapper also accepts `emmc-probe-1`, `emmc-probe-2`,
+`emmc-probe-3`, `emmc-probe-4`, `emmc-probe-5`, `emmc-probe-6`,
+`emmc-probe-7`, `emmc-probe-8`, `emmc-probe-9`, `emmc-probe-10`,
+`emmc-probe-11`, `emmc-probe-12`, `emmc-probe-13`, `emmc-probe-14`,
+`emmc-probe-15` and `emmc-probe-16`, mapping to
+`gta4l-emmc-probe=1/2/3/4/5/6/7/8/9/10/11/12/13/14/15/16` (the
+`emmc-probe-4` mapping was added for the 2026-11-02 Stage-B1 build,
+`emmc-probe-5` for the Stage-B1C continuation build, `emmc-probe-6` for the
+1-bit CMD19/CMD14 discriminator build, `emmc-probe-7` for the data-timeout
+audit build, `emmc-probe-8` for the Stage-B2 HS-timing build,
+`emmc-probe-9` for the Stage-H9 CMD3-completion retry build,
+`emmc-probe-10` for the Stage-H10 width-at-HS continuation build,
+`emmc-probe-11` for the Stage-H11 width-value continuation build,
+`emmc-probe-12` for the Stage-H12 record-only DDR attempt build,
+`emmc-probe-13` for the Stage-H13 rung-1 write-phase recovery build,
+`emmc-probe-14` for the Stage-H14 rung-2 forced post-write drain build,
+`emmc-probe-15` for the corrected verified-width rung and `emmc-probe-16` for
+the content-only isolation rung). The stage-2
+image built on
+2026-10-31 is
+`out/gta4l/ram-root-emmc-probe-evidence/boot-ram-root-emmc-probe-stage2.img`
+(85,688,320 bytes, SHA-256
+`4f2252df6bbd5d9c7f05ef97c0041da9acdc47212debf31a10334aefa45a12e5`). Its payload
+is SHA-256 `2953e90220f1e2d9341fc154f3f2eb6523ab2539be68404a3beffa8ee4702633`;
+the payload contract is 7/7 and the boot-image gate is 18/18. It was built
+without a hardware-tested marking; the build manifest is retained as
+provenance. The image was subsequently written to BOOT only for the stage-2
+host run on 2026-10-31 (readback matched and recovery stayed byte-identical);
+see `docs/emmc-driver.md` §5.2.
+
+The stage-3 image built the same day is
+`out/gta4l/ram-root-emmc-probe-stage3-evidence/boot-ram-root-emmc-probe-stage3.img`
+(85,688,320 bytes, SHA-256
+`88b4d28607b371fe008922131c6ee51f27f73da30249fd4a07969f770fa90d87`) on the
+unchanged kernel; its payload is SHA-256
+`4028e432f200dc1069a50f1baa6786d2f4861b187f2c5a0bd126bb20f5a9cd41`, with
+`gta4l-emmc-probe=3`, payload contract 7/7 and boot-image gate 18/18. It was
+written to BOOT only for the stage-3 identification run on 2026-10-31
+(readback matched and recovery stayed byte-identical); that run stopped at a
+command CRC error before the identification report. See
+`docs/emmc-driver.md` §5.3.
+
+A later diagnostics-only rebuild, `cmd2window`, is
+`out/gta4l/ram-root-emmc-probe-cmd2window-evidence/boot-ram-root-emmc-probe-cmd2window.img`
+(85,688,320 bytes, SHA-256
+`b119f78010bb8e50f319d871f05d94c29b57010757b2a32176c0d9ff778ff19b`); its
+payload is SHA-256 `177e5179…`, kernel `4c1cd5e1…`, with
+`gta4l-emmc-probe=3`. It was written to BOOT only on 2026-10-31 (readback
+matched and recovery stayed byte-identical). That run completed CMD2 and
+stopped at a CMD3 completion timeout; see `docs/emmc-driver.md` §5.3.1 and
+`docs/emmc-cmd2-crc-audit.md` §2.7.
+
+A later diagnostics-only `fmt=2` rebuild is
+`out/gta4l/ram-root-emmc-probe-fmt2-evidence/boot-ram-root-emmc-probe-fmt2.img`
+(85,688,320 bytes, SHA-256
+`7bf3e71991f949f2da6fcff2ef388268904a512b1876062d04e9bb86b6f411b6`); its
+payload is SHA-256
+`ba4e88ba5597d28c4ed70917c6e710f9b35a8eb8e59193e4ed834b8ff5eef4a7`,
+kernel `f53860af…`, source hashes `b4461abc…`, `c50b6467…` and `60cff259…`,
+with `gta4l-emmc-probe=3`, payload contract 7/7 and boot-image gate 18/18. It
+was written to BOOT only on 2026-10-31 (readback matched and recovery stayed
+byte-identical) and the owner booted it. The run completed CMD2, CMD3 and CMD9
+and stopped at a CMD7 R1b completion timeout; see
+`docs/emmc-driver.md` §5.3.2 and `docs/emmc-cmd7-timeout-finding.md`.
+
+A later `fmt=4` fail-closed rebuild, built on 2026-11-01, is
+`out/gta4l/ram-root-emmc-probe-failclosed-evidence/boot-ram-root-emmc-probe-failclosed.img`
+(85,688,320 bytes, SHA-256
+`4d2f7975d3bc2e26a1ab15fb4d60d765190fba2df0e6b4ee7c5226d41a63e5bf`); its
+payload is SHA-256
+`954cc0dcc2de0536c1944d73eb92aad9b45fdc67b9de494ed520cbcdf684e399`,
+kernel `27cb1b54…`, source hashes `e493b3eb…`, `e0a2830c…` and `932552a2…`,
+with `gta4l-emmc-probe=3`, payload contract 7/7 and boot-image gate 18/18. The
+owner reports two runs of the same image on two different units: an SM-T505
+first, then the owner's SM-T505N. Both failed at CMD2 with `rc=-8`
+(`GTA4L_EMMC_ERR_CMD_CRC`) and the same failure record and response window as
+`docs/emmc-cmd2-crc-audit.md` §2.6. The later BOOT-only run on the SM-T505N has
+a flash record at
+`out/gta4l/ram-root-emmc-probe-failclosed-rerun-evidence/flash-record.json`
+(pre-flash BOOT `92e80609…`, post-flash full partition `b53f31fe…`, image-byte
+readback `4d2f7975…`, `RECOVERY` `14e11370…` unchanged, gate 18/18 and payload
+contract 7/7; the gates were also rerun directly on the pulled image prefix and
+extracted payload). The photo is
+`out/gta4l/ram-root-emmc-probe-failclosed-rerun-evidence/stage3-fmt4-rerun-photo-2026-11-01.jpg`
+(SHA-256
+`c079952510039d236a705985a91d9e4a8b042a125afb81ef66bf1a4e6ddc8c76`). The
+`fmt=4` CMD7 capture was not exercised; see §2.9 and `docs/emmc-driver.md`
+§5.3.3.
+
+The 2026-11-01 `cmd1gap` candidate adds only an 8-us delay after an accepted
+ready CMD1. It is
+`out/gta4l/ram-root-emmc-probe-cmd1gap-evidence/boot-ram-root-emmc-probe-cmd1gap.img`
+(85,688,320 bytes, SHA-256
+`8a463dae3ff120213046558d89374316e0a51fadb845247a60f822fad9e227ee`); its
+payload is SHA-256 `6b6f5212…`, kernel `ee33719e…`, source hashes `874e6878…`,
+`5dd223f7…` and `932552a2…`, with `gta4l-emmc-probe=3`, payload contract 7/7
+and boot-image gate 18/18 against the v5 baseline. The flash record is
+`out/gta4l/ram-root-emmc-probe-cmd1gap-evidence/flash-record.json`: BOOT only,
+pre-flash partition `b53f31fe…` (the fail-closed image plus its unchanged tail),
+post-flash `92f4000e…`, image-byte readback `8a463dae…`, tail `a28b4ea2…`
+unchanged, `RECOVERY` `14e11370…` unchanged, pulled gate 18/18 and pulled
+payload contract 7/7. The owner then ran it on three units; all three reached
+`GTA4L-EMMC IDENT REPORT: rc=0`. See `docs/emmc-cmd2-crc-audit.md` §2.11,
+`docs/emmc-driver.md` §5.3.4 and `docs/emmc-cmd1-gap-candidate.md`. The run
+results are owner-supplied text; no photo file or hash from this run is in the
+tree.
+
+The 2026-11-02 `emmc-probe-1` full-probe image is
+`out/gta4l/ram-root-emmc-probe-stage1-evidence/boot-ram-root-emmc-probe-stage1.img`
+(85,688,320 bytes, SHA-256
+`bf73a39b4a3612d14e377c3aba5f8f531796d0cf41e8d1d5630c3746acf87c10`); its
+payload is SHA-256
+`42e7a5185ff9e5c624b6a829987d6d3bd55d968929d67ddf712e6758c58253ff`,
+kernel `194c909f…`, source hashes `874e6878…`, `5dd223f7…` and `932552a2…`,
+with `gta4l-emmc-probe=1`, payload contract 7/7 and boot-image gate 18/18
+against the v5 baseline. The owner's SM-T505N flash record is
+`out/gta4l/ram-root-emmc-probe-stage1-evidence/flash-record.json`: BOOT only,
+pre-flash partition `92f4000e…`, post-flash `421e8848…`, image-byte readback
+`bf73a39b…`, tail `a28b4ea2…` unchanged, `RECOVERY` `14e11370…` unchanged,
+pulled gate 18/18 and pulled payload contract 7/7. The owner then booted it on
+the SM-T505N and one SM-T505; both reached `GTA4L-EMMC PROBE REPORT: rc=0` with
+successful block 0 and block 1 `CMD17` reads. The SM-T505 run has no flash
+record in the tree and its image identity is owner-reported/shared. See
+`docs/emmc-cmd2-crc-audit.md` §2.12 and `docs/emmc-driver.md` §5.3.5. The run
+reports are owner-supplied photographs; no photo file or hash is in the tree.
 
 This establishes the packaging step only. The inputs are existing artifacts;
 the replay does not reproduce the kernel or firmware.
