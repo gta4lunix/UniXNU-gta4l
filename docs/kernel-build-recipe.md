@@ -99,7 +99,7 @@ transcript of the historical invocation. `build kernel` runs three stages `[S]`:
    `board.toml [kernel] archives` plan, including
    `build-gta4l-sdhci-snapshot.py`.
 3. The final `make` links the kernel with the external archives, including
-   `CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/gta4l-sdhci-snapshot/libGta4lSdhciSnapshot.a"`.
+   `CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/gta4l-sdhci-snapshot/libGta4lSdhciSnapshot.a -Wl,-force_load,{tree}/build/gta4l-emmc-probe/libGta4lEmmcCore.a -Wl,-force_load,{tree}/build/gta4l-emmc-probe/libGta4lEmmcProbe.a"`.
 
 `build prelink` reads the OS profile's `[kernel.prelink]` and runs
 `emit_prelink.py` against the linked kernel and the pinned kernelcache `[S]`.
@@ -210,7 +210,8 @@ personality from `OUT/.config`, not the script defaults:
 
 ```sh
 cd src/UniXNU
-export PATH=/tmp/opencode/py311/bin:$PATH
+# The /tmp/opencode/py311 shim used at the time is gone; the host
+# /usr/bin/python3.11 provides the same interpreter.
 export UNIXNU_TOOLCHAIN=$HOME/slopcode/toolchain
 export KERNEL_BUILD_DATE='Thu Oct 29 01:23:04 IST 2026'
 python3.11 ./unixnu build kernel -D ../UniXNU-gta4l -j 8

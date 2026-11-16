@@ -111,6 +111,13 @@ write clears them and `caps == 0` prevents re-enable. See
 line ranges at commit `cf5f763f0ef8a5b4d8bb4163833cba1160c51894`,
 `linux-regulator-lifecycle.md`.
 
+The revision-pinned comparison of the organization's Linux 7.2, downstream
+Android and U-Boot trees, including the byte identity of this MMC stack with
+the organization's Linux 7.2 tree, is in `docs/linuxforgta4l-org-audit.md`;
+its retrieval inventory is `docs/linuxforgta4l-org-audit-manifest.tsv`. Those
+are reference findings only and do not change this document's rail or pad
+statements.
+
 ## guamp reference
 
 Repository:
@@ -156,6 +163,18 @@ The static audit in [native-emmc-reference-audit.md](native-emmc-reference-audit
 records the reusable patterns, the MediaTek-specific parts, the
 completion/error-path gaps and the host-only test plan. It adds no hardware
 result and does not change any gta4l blocker.
+
+## PixelExperience reference
+
+The PixelExperience Plus 11 (Android 11) `gta4l`/SM-T505 release by dolbaras
+and its pinned `lineage-18.1` source anchors are compared in
+[pe-storage-stack-provenance.md](pe-storage-stack-provenance.md). The release
+boot DTB base plus QRD overlay produces an `sdhci@4744000` node semantically
+identical to the live FDT (property order differs), and the kernel is
+vendor-lineage 4.19.300 code. The inspected vendor source sends CMD7 as R1
+with no in-command busy wait, unlike the port's R1B design. The release cannot
+be tied to exact source commits and only its SM-T505 build was device-tested;
+no code is imported.
 
 ## Open questions before implementation
 

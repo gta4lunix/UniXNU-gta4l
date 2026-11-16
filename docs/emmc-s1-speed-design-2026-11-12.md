@@ -1,0 +1,638 @@
+# gta4l S1 speed design and record (2026-11-12)
+
+Status: **hardware PASS on one owner boot (2026-11-13)**. The candidate was
+built from committed tree `5d82708`, flashed to BOOT only and booted once.
+The driver entered HS timing at the 50 MHz RCG row, switched to 8-bit on the
+first attempt, read the bounded 4 KiB window through the published BOOT
+partition in two passes with both digests equal to the host digest of the
+final image, and reverted to 1-bit / legacy timing / 400 kHz with a verified
+revert. §8.6 records the candidate, §9 the run and §10 the verdict. The
+start-path budget is fixed at 25,000 ms and the combined revert budget at
+9,500 ms (worst pre-watchdog path 34,500 ms). This document is the rung
+record for S1: the design sections below are corrected after the 2026-11-12
+audit; the candidate, run and verdict sections are appended after the
+implementation batch and the owner boot.
+
+Risk class R1: a new combination of measured modes (HS timing plus a wider
+bus) with reference support and a verified pre-report revert. Standing owner
+approval covers the read-only preflight, the BOOT-only flash and local
+commits.
+
+## 1. Question and scope
+
+Does the block driver read correctly through published BOOT media at HS
+timing and the widest verified bus width? The rung qualifies only the
+reported 4 KiB read window on the reported boot. It does not qualify
+sustained or arbitrary I/O, a megabyte-scale throughput claim, writes, DMA,
+interrupts, a filesystem, a mount or initialization reliability. Sustained
+throughput moves to S2, which needs a transport or deadline change.
+
+## 2. Evidence basis
+
+- N10.24 (5.3.98) published the whole media and the BOOT partition at 4-bit
+  SDR / 400 kHz, read eight tagged two-block cases in two passes and
+  reverted to 1-bit with a verified revert. The mode contract, report
+  lifecycle and watchdog budget are the base for S1.
+- B2 (5.3.20) entered HS timing at 1-bit, matched the full stage-A content
+  pass at the 50 MHz clock and reverted cleanly on two warm boots. B2 did
+  not set `HOST_CONTROL.HISPD`.
+- TWRP runs this eMMC at HS400 Enhanced Strobe in 8-bit, so DATA0-7 are
+  wired and the 8-bit card/host path works on this board. The port has not
+  used 8-bit.
+- Linux `mmc_init_card()` selects timing before bus width, tries 8-bit then
+  4-bit, and `sdhci_set_ios()` sets `HISPD` for `MMC_TIMING_MMC_HS`.
+- The N10.24 LBA-1 baseline read and the publication discovery are retained.
+  No 1-bit reference window is read: content is bound to the host digest of
+  the final image, and a 4 KiB 1-bit reference at 400 kHz is not needed for
+  a mode-correctness claim.
+
+## 3. Contract
+
+### 3.1 Token and selection
+
+- Token `gta4l-emmc-speed=1`.
+- Requires exactly one `gta4l-emmc-block=3` token.
+- Refuses duplicate speed tokens, any block mode other than 3, any value
+  other than 1, and every other diagnostic instrument: `partobs`,
+  `partcmp`, `partread`, `deblock`, `breakup`, `sweep`, `consume`, `width`,
+  `widthhold`, `widthpub`, plus the probe and SDHCI snapshot tokens already
+  refused by the block-mode selector.
+- The selector mirrors `gta4l_emmc_block_widthpub_select()` in
+  `package/Gta4lEmmcBlock.c:332` and is unit-tested with the same truth
+  table.
+
+### 3.2 Start sequence (pre-watchdog)
+
+1. Enter the report-mode start path and initialize hardware as today.
+2. Allocate one 4 KiB page-aligned read buffer (`SPEED_WINDOW_BYTES` =
+   8 blocks). The buffer holds one pass over the four two-block offsets.
+3. Read the EXT_CSD baseline at 1-bit / 400 kHz.
+4. Enter HS timing with `gta4l_emmc_set_hs_timing(&host, 1, &hs)`.
+   - Primary configuration keeps `HISPD` clear, because that is the only
+     configuration measured in this port (B2).
+   - Record `hs_before`/`hs_after`, the RCG configuration, the
+     `CLOCK_CONTROL` value, `switch_status` and both results.
+5. Switch to 8-bit with `gta4l_emmc_set_bus_width_verified(&host, 8, &w)`.
+   - If verification fails, the helper restores 1-bit. A 4-bit attempt is
+     allowed **only** when the 8-bit failure reports a verified rollback
+     (`rollback_result == GTA4L_EMMC_OK`) and the read-only EXT_CSD
+     properties still match the baseline. An `ERR_WIDTH_RESTORE` result is
+     terminal and forbids any fallback.
+   - Record the winning width, `wfall`, `wroll`, the switch result, the
+     host control before and after, the read-only EXT_CSD verification
+     result and the CMD6 attempt count. `wroll=1` is set only after the
+     failed 8-bit attempt reports a verified rollback.
+6. Read the inherited LBA-1 baseline through the block core at the final
+   mode. A failure is `BASE`; the start path then performs the combined
+   synchronous revert and reports.
+7. Publish the media and start the report thread.
+
+`HISPD` is a separate one-variable rung (S1b) only if S1 fails at the wide
+width with a data CRC or timeout. S1 never mixes both configurations.
+
+### 3.3 Report thread (watchdog-covered)
+
+1. Wait up to 8,000 ms for exactly one whole media.
+2. Find the BOOT partition within 2,000 ms; open it read-only.
+3. Two passes over the first 4 KiB of BOOT:
+   - request two blocks (1 KiB) at a time through the partition IOMedia,
+     with the advertised `limit=64` blocks and `seg=1`;
+   - four requests per pass, eight requests total;
+   - hash the 4 KiB pass after the fourth request;
+   - check the 2,000 ms shared loop budget between requests;
+   - stop at the first request error, short transfer or cancellation.
+4. Re-read the same window (pass 2) and hash it independently.
+5. Acquire the gate within 2,000 ms.
+6. Revert with one **combined width and timing helper**, not two independent
+   helpers. The helper must:
+   - clear a stuck data inhibit;
+   - drop the clock to 400 kHz;
+   - write CMD6 byte 185 = 0 and wait for TRAN;
+   - write CMD6 BUS_WIDTH = 1 and wait for TRAN;
+   - clear the host width bits and verify the readback;
+   - read EXT_CSD once and require byte 185 = 0 plus unchanged read-only
+     properties;
+   - record both CMD6 attempts and the final host control.
+   The combined helper is `gta4l_emmc_recover_width_and_timing()` in
+   `package/Gta4lEmmc.c`, implemented and host-tested in the 2026-11-12
+   helper batch.
+7. Emit the `SPEED:` line and the existing media fields, then take the
+   intentional terminal report stop.
+
+Any post-switch failure runs the same combined revert before the report. A
+revert failure is terminal; the next boot's CMD0 resets the card. The two
+separate helpers are not used together here because their combined
+worst-case bound does not fit the watchdog (see §4).
+
+### 3.4 Report fields
+
+Success line, one logical line:
+
+```
+GTA4L-EMMC P5 SPEED: hs=1 hsrb=0 hsa=1 rcg=0000020b hispd=<2hex>
+wtry=8 wfall=0 wroll=0 wid=<8|4> verified=1 hb=<2hex> ha=<2hex> cmd6=<u32> base=1
+bytes1=4096 ticks1=<u64> hz=<u32> dig1=<32hex> bytes2=4096 ticks2=<u64>
+dig2=<32hex> req=8 fails=0 cancel=0 budget=0 partial=0 pub=1 partdiag=0
+revert=1 rverified=1 rhb=<2hex> rha=<2hex> rcmd6=<u32> rstatus=0
+hsrevert=1 hsverified=1 rhsb=1 rhs=0 rclk=400000 limit=64 seg=1 cap=61071360
+```
+
+`wfall=1` records that 8-bit verification failed and 4-bit won. `ticks` are
+the platform counter deltas and `hz` is `gta4l_emmc_platform_counter_hz()`.
+`hispd` is the raw HOST_CONTROL byte sampled immediately after HS entry and
+**before** the bus-width switch, so its 4/8-bit bits are expected clear; the
+checker rejects both the wide-width bits and bit 2 (the primary S1
+configuration keeps high-speed enable clear). The formatter-exact maximum is
+derived from the source constants and recorded in the code.
+
+### 3.5 Success predicate
+
+- `hs=1`, `hsrb=0`, `hsa=1`, `rcg=0000020b`, `hispd` bit 2 clear,
+  `wtry=8`, `wid` is 8 or 4, `verified=1`.
+- `wfall=0` with `wid=8`, or `wfall=1` with `wid=4`.
+- `wroll=0` with `wid=8`, or `wroll=1` with `wid=4`; `wroll=1` is accepted
+  only because the failed 8-bit attempt reported a verified rollback.
+- `hb` has no wide width bit; `ha` and `rhb` carry exactly the reported
+  width; `rha` has neither bit.
+- `cmd6>=1`, `rcmd6>=2`.
+- `bytes1=bytes2=4096`, `req=8`, `partial=0`.
+- `dig1=dig2` and both equal the host SHA-256 prefix of the first 4 KiB of
+  the final BOOT image.
+- `ticks1>0`, `ticks2>0`, `hz>0`.
+- `fails=0`, `cancel=0`, `budget=0`.
+- `pub=1`, `partdiag=0`.
+- `revert=1`, `rverified=1`, `rstatus=0`, `hsrevert=1`, `hsverified=1`,
+  `rhs=0`, `rclk=400000`.
+
+A digest mismatch with clean status is treated as a buffer or offset defect,
+not accepted.
+
+### 3.6 Failure classes
+
+| Class | Next action |
+| --- | --- |
+| HS entry refused or readback mismatch | Compare CMD6/CMD13 ordering with Linux `mmc_select_hs()`; one fix, one boot |
+| 8-bit verify fail with a verified rollback | Try 4-bit; record `wfall=1` |
+| 8-bit verify fail with `ERR_WIDTH_RESTORE` | Terminal; fix rollback before another image |
+| Both widths refused | Report the 1-bit outcome; check the verified helper's rollback and the EXT_CSD compare |
+| Data CRC/timeout at speed | S1b sets HISPD on entry and clears it on revert |
+| Short/partial read | Budget or transfer-shape defect; report partial bytes |
+| Digest mismatch | Buffer/offset bug first; add read-detail fields and re-run |
+| Combined revert failure | Terminal; fix the helper in the simulator before another image |
+
+## 4. Timing
+
+Pre-watchdog start path. The start path arms **one 25,000 ms budget**
+(`gta4l_emmc_deadline_arm`) after `initializeHardware()` and before the
+1-bit EXT_CSD baseline, and clears it (`gta4l_emmc_deadline_clear`) on every
+exit before `registerService()`. The budget covers the 1-bit EXT_CSD
+baseline, HS entry, the 8-bit verified switch, a 4-bit fallback and the
+LBA-1 baseline. Every nested wait checks it: command inhibit, command and
+data polls, TRAN, the RCG update and the clock-stable wait.
+
+| Case | Bound |
+| --- | ---: |
+| Start budget (enforced) | 25,000 ms |
+| Combined width/timing revert after an expiry (enforced, separate) | 9,500 ms |
+| **Worst pre-watchdog path** | **34,500 ms** |
+| N10.24 accepted pre-watchdog envelope | 38,230 ms |
+| **Margin** | **3,730 ms** |
+
+A start-budget expiry is terminal and reported; it is never retried and it
+never runs the revert under the expired budget. HS entry returns
+`GTA4L_EMMC_ERR_DEADLINE`; the switch or its rollback returns
+`GTA4L_EMMC_ERR_WIDTH_RESTORE` because the rollback cannot verify at an
+exhausted deadline, and that result forbids the 4-bit fallback. In both
+cases the combined `gta4l_emmc_recover_width_and_timing()` re-arms its own
+9,500 ms budget, clears it on every exit, and the failure is reported after
+the verified revert.
+
+The per-step rows below are historical iteration bounds for the no-deadline
+regression, not the enforced path bound:
+
+| Step (no deadline armed) | Iteration bound |
+| --- | ---: |
+| 1-bit EXT_CSD baseline (inhibit + data) | 2,000 ms |
+| HS entry (2 EXT_CSD reads + CMD6 + TRAN + clock) | 17,261 ms |
+| 8-bit verified switch (success path) | 17,010 ms |
+| 8-bit failure plus one verified rollback | 32,020 ms |
+| 8-bit failure plus a second restore attempt | 47,030 ms |
+| 4-bit verified fallback (after a verified rollback) | 17,010 ms |
+| LBA-1 baseline read | 2,000 ms |
+
+They use the measured 11,010 ms TRAN wait (10 x (1,000 ms inhibit +
+100 ms CMD13 poll + 1 ms delay)) and the 13,010 ms CMD6 path (1,000 ms
+inhibit + 1,000 ms command poll + 11,010 ms TRAN). The earlier 21,271 ms
+and 31,291 ms sums are withdrawn as path bounds: they assumed one 1,010 ms
+TRAN wait and did not allow the second rollback attempt. The enforced
+budget intentionally converts a pathological eventually-successful wait
+into a reported terminal failure instead of an unbounded `start()`. A
+healthy start path is far below 25,000 ms, and a path that consumes the
+budget is treated as a stall.
+
+The start path has no 1-bit reference read and no megabyte-scale transfer.
+Both paths are pre-watchdog; N10.24 accepted 38,230 ms there.
+
+Report thread:
+
+| Step | Bound |
+| --- | ---: |
+| whole-media wait | 8,000 ms |
+| BOOT discovery deadline | 2,000 ms |
+| shared two-pass loop budget | 2,000 ms |
+| one in-flight two-block request | 4,500 ms |
+| gate acquisition | 2,000 ms |
+| combined width/timing revert | 9,500 ms |
+| **Total** | **28,000 ms** |
+
+The revert budget is **enforced**, not estimated: the helper arms one
+shared elapsed-time deadline before the clock switch and checks it in every
+wait, including the command-inhibit wait inside each TRAN poll. The S1
+budget is **9,500 ms**, so the report thread is at most **28,000 ms** and
+the margin against the 30,000 ms watchdog is **2,000 ms**. The 4,500 ms
+in-flight term is the sum of the 1,000 ms command-inhibit wait, the 1,000 ms
+CMD18 data poll, the 500 ms secondary drain and the 1,000 ms CMD12 entry and
+completion waits; the adapter's `static_assert` ties it to
+`GTA4L_EMMC_CMD_TIMEOUT_US`, `GTA4L_EMMC_DATA_TIMEOUT_US` and
+`GTA4L_EMMC_DATA_DRAIN_US`. Expiry is a terminal revert failure
+(`hsrevert=0`, `rverified=0`), reported and not retried.
+
+The earlier 1 MiB / 27,220 ms draft is withdrawn. It assumed one in-flight
+bound for a 32 KiB request, but `GTA4L_EMMC_BLOCK_CHUNK_BLOCKS` is two, so
+that request is 32 sequential chunks. It also allowed only 2,000 ms for
+leaving HS even though `gta4l_emmc_set_hs_timing(0)` performs two EXT_CSD
+reads and two clock/CMD operations. Neither bound was supportable.
+
+## 5. Host validation plan
+
+- Selector truth table: required block mode and value, duplicates, each
+  conflicting instrument, and the inert/no-token case.
+- Combined revert helper: normal path, clock-switch failure, first CMD6
+  failure, TRAN failure, second CMD6 failure, EXT_CSD read failure, byte-185
+  mismatch, properties mismatch, and no fallback after `ERR_WIDTH_RESTORE`.
+- Deadline enforcement: arm/clear on every exit, a no-budget regression,
+  and expiry inside the clock wait, data reset, command-inhibit wait, TRAN
+  poll and final read. Mutation controls drop or misreport each check.
+- Simulator scenarios: 8-bit pass; verified 8-bit rollback then 4-bit pass;
+  8-bit `ERR_WIDTH_RESTORE`; both widths fail; HS entry refused; CMD6
+  readback mismatch; mid-read data CRC and timeout with the combined
+  revert; short transfer; budget expiry with partial bytes; cancellation
+  before and during a request; media discovery and partition deadline
+  expiry.
+- Mutation controls: every predicate term, the digest comparison, the
+  winning width, `wfall`, `wroll`, `hispd`, both revert flags, `pub`,
+  `partdiag`, `req`, `bytes`, `partial`, `rcmd6`, and selector conflicts.
+- Evidence checker: `--mode speed` recomputes the first 4 KiB digest,
+  requires the exact line shape, rejects well-formed wrong values (clock,
+  RCG, CMD6 counts, width bits, HS states) and rejects a one-character
+  digest mutation or a one-byte image change.
+- Existing gates: eMMC core, probe, block, payload/package, evidence
+  counts, RAM-root fixture, board GPT, TOML parse, `git diff --check` and
+  the privacy grep.
+
+## 6. Flash and boot
+
+- Build the native kernel, storage-ABI audit, archive reconciliation,
+  diagnostic payload and BOOT image with the established chain.
+- BOOT gate 18/18 against the v5 baseline and `only_ramdisk_differs`.
+- Flash BOOT only with the S0 helper; the required baseline covers BOOT,
+  RECOVERY, EFS and sec_efs.
+- One owner boot. The owner returns to TWRP; the rung report is normalized
+  with `scripts/normalize-gta4l-report.py` and checked with `--mode speed`.
+- One verdict boot; a pre-identification stop may be retried up to two
+  more times on the same image under the existing boot accounting.
+
+## 7. Open items
+
+Status 2026-11-13: the first six items are closed by the B6 candidate (§8.6)
+and the run (§9). The last two remain the scope limits and are carried into
+§10 and §11.
+
+- The S1 start path, report thread, formatter, selector and the
+  `emmc-block-3-speed` diagnostic personality are implemented and covered by
+  the host report-thread batch recorded in §8.5. Do not flash until every
+  host gate passes. **Closed:** every B5 gate passed on the committed tree
+  before the candidate was built (§8.6).
+- The combined width/timing revert helper exists and passes the core
+  scenarios. Its S1 budget is enforced by a shared 9,500 ms deadline and the
+  report-thread worst case is statically tied to the 30,000 ms watchdog with
+  a 2,000 ms margin. **Closed:** the boot used 9,500 ms at most and the
+  revert verified (§9).
+- The speed archive compiles with the kernel toolchain and the consumer probe
+  still imports exactly 187 symbols, but archive generation refuses the stale
+  storage-ABI audit (`candidate does not match kernel.macho`). B6 rebuilds
+  the candidate and re-audits it before any archive or boot image is used.
+  **Closed:** the candidate reached the ABI fixpoint at
+  `storage-abi-a2fdd9452ea5` and the archive was requalified against that
+  kernel.
+- `HISPD` remains unset in the primary image; S1b is the fallback.
+  **Closed:** `hispd=00` and the window passed at 8-bit, so S1b is not
+  triggered.
+- The 8-bit / 50 MHz timing margin, pad state and DLL state are unmeasured
+  until the boot. **Closed as far as S1 claims:** the boot measured correct
+  content at 8-bit / 50 MHz, but the electrical margin, pad and DLL state
+  remain unmeasured and stay unqualified.
+- A PASS only qualifies the first 4 KiB of the BOOT image on that boot.
+  **Remains:** see §10.
+- Sustained throughput is S2 and needs a transport or deadline change; it
+  is not part of S1. **Remains:** §9 measures the overhead that sizes S2.
+
+## 8. Host helper and selector batches
+
+The 2026-11-12 helper batch adds
+`gta4l_emmc_recover_width_and_timing()` and eighteen core scenarios:
+`recover-both-clean`, `recover-both-8bit`, `recover-both-clock-busy`,
+`recover-both-hs-stuck`, `recover-both-cmd6-error`,
+`recover-both-width-error`, `recover-both-properties`,
+`recover-both-inhibit-stuck`, `recover-both-inhibit-clear`,
+`recover-both-final-read-timeout`, `recover-both-no-budget`,
+`recover-deadline-inhibit`, `recover-deadline-tran`,
+`recover-deadline-read`, `recover-deadline-clock`,
+`recover-deadline-reset`, `recover-deadline-cmd6` and `recover-both-arg`.
+The core suite passes 207 scenarios and 126 mutation controls.
+
+The selector batch adds `GTA4L_EMMC_BLOCK_SPEED_ARG "gta4l-emmc-speed"`,
+OFF/ON/REFUSED and `gta4l_emmc_block_speed_select()`. The token is accepted
+only with exactly one `gta4l-emmc-block=3` token, value 1, no duplicate and
+no other partition, read, consumer or width instrument; all ten existing
+selectors take a `speed_selected` argument and refuse the combination. The
+adapter adds `speed-accepted`, `speed-absent`, `speed-refused-orphan`,
+`speed-refused-block`, `speed-refused-value`, `speed-refused-duplicate` and
+`speed-refused-conflicts`, plus value-, duplicate-, block- and per-selector
+conflict-accepted policy controls. The block suite passes 48 core scenarios
+with 38 mutation controls and 377 adapter scenarios (378 PASS lines) with
+128 adapter, 3 support and 31 policy mutation controls; core is 207/126 and
+probe 196/100. The selector is inert until the start path consumes it: no
+HS entry, wider bus, `SPEED` report line, candidate, run or verdict exists
+yet.
+
+The deadline-export batch makes `gta4l_emmc_deadline_arm()`,
+`gta4l_emmc_deadline_check()` and `gta4l_emmc_deadline_clear()` public with
+the caller-owned contract: one shared absolute deadline, expiry at counter
+equality, no helper clears it and an arm replaces it. The simulator adds the
+`bus_width_restore_no_cc` fault, the `deadline-api-expiry`,
+`deadline-start-hs`, `deadline-start-width` and `deadline-start-rollback`
+scenarios, and strict-check plus active-flag mutation controls. The core
+suite passes 211 scenarios and 128 mutation controls; probe 196/100. B2 can
+now bound the whole start path with one budget; B2-a is resolved.
+
+The start-budget record batch fixes that budget at **25,000 ms** and the
+combined revert at **9,500 ms**, so the worst pre-watchdog path is
+**34,500 ms**, 3,730 ms inside the N10.24 38,230 ms envelope. Design §4 now
+carries the enforced figures and keeps the per-step iteration bounds only as
+the no-deadline regression reference. No code path consumes the budget yet;
+B2 arms it after `initializeHardware()` and clears it before publication.
+
+### 8.5 S1 host report-thread batch (2026-11-13)
+
+The report-thread batch closes the host side of B5. It changes no hardware
+input and records no run.
+
+Code findings resolved before the scenarios:
+
+- The report-thread worst case is now a compile-time sum:
+  8,000 ms media wait + 2,000 ms BOOT deadline + 2,000 ms shared loop budget
+  + 4,500 ms in-flight case + 2,000 ms gate + 9,500 ms combined revert =
+  **28,000 ms**, leaving the fixed **2,000 ms** margin under the 30,000 ms
+  watchdog. The source `static_assert` checks both the total and the 4,500 ms
+  case term against the 1,000/1,000/500/1,000/1,000 ms transport constants.
+- `widthholdElapsedMs()` starts at `widthholdReadStart`, which is set after
+  the BOOT media open, not before discovery; discovery keeps the independent
+  8,000 ms whole-media and 2,000 ms BOOT deadlines. The 28,000 ms sum is
+  therefore reachable only as a bound, not as an actual report path.
+- The formatter bound was corrected from 756/1,596 to **746/1,586** by
+  counting the fields by type (31 u32, two u64, one i32, six fixed hex and
+  two 32-hex digests). `speed-format-max` formats every speed field at its
+  type maximum and asserts the line is exactly 746 bytes and fits 2,560.
+- `hispd` is defined as the raw HOST_CONTROL byte after HS entry and before
+  the width switch. The checker example is `hispd=00` and now rejects both
+  bit 2 and the 4/8-bit width bits at that point.
+- The speed case constants are statically tied to the shared widthhold
+  two-block case, the eight-block reference and the 4 KiB window. The speed
+  tag is `0x53504545 + index` and `widthholdObserve()` accepts it only by
+  exact equality, so a widthhold tag is foreign.
+- `speedFallback` and `speedSwitch` are explicitly cleared before the 8-bit
+  attempt; `wroll` keeps its documented equivalence to `wfall` because the
+  fallback is reachable only after a verified rollback. `rhsb` is provably 1
+  on the report path because `start()` never registers the report thread
+  before HS entry succeeds, so a constant there is equivalent and is not a
+  mutation target. The media, BOOT and gate poll loops can overshoot their
+  nominal bound by one 50 ms or 10 ms step; the 2,000 ms watchdog margin
+  absorbs that case.
+- Every start-path stage latch now has a per-exit budget-clear check: the
+  source test verifies the clear before BASELINE/HS/WIDTH/FALLBACK/BASE, the
+  arm after ALLOC, the clear before publication, and no latch before the arm.
+  Each new failure scenario also asserts `!host.deadline_active`.
+- An unexpected widthhold reason maps to the new `STAGE_UNKNOWN` (23) rather
+  than looking like a data READ failure.
+- The first report-thread failure scenario found a duplicate offline
+  notification: a failed case read sent `messageClients()` directly and the
+  report thread then sent through `notifyOfflineOnce()`. The async path now
+  uses the shared latch for speed mode as well, so a failure notifies
+  exactly once. The scenarios assert one message on failure and none on
+  success.
+- The checker now requires `cmd6>=1` in addition to `rcmd6>=2`; the
+  self-test mutates every FIXED field and the conditional width/tick cases.
+
+Host coverage added:
+
+- 31 report-thread adapter scenarios: `speed-match-8bit`,
+  `speed-match-4bit`, `speed-read-crc`, `speed-read-timeout`,
+  `speed-short`, `speed-budget`, `speed-budget-boundary`,
+  `speed-cancel-before`, `speed-cancel-during`, `speed-media-absent`,
+  `speed-part-absent`, `speed-part-duplicate`, `speed-part-wrong-base`,
+  `speed-part-writable`, `speed-desc`, `speed-open-fail`,
+  `speed-foreign-tag`, `speed-order`, `speed-digest-mismatch`,
+  `speed-gate-timeout`, `speed-revert-fail`, `speed-revert-unverified`,
+  `speed-revert-budget`, `speed-revert-hs-stuck`, `speed-revert-clock`,
+  `speed-revert-host-wide`, `speed-first-failure-latch`,
+  `speed-watchdog`, `speed-thread-start`, `speed-alloc` and
+  `speed-format-max`.
+- The adapter prints the success line and the crossed-digest line; the block
+  host test feeds both to `check-gta4l-speed-evidence.py --line` against a
+  synthetic 4 KiB BOOT window. The success line passes and the crossed line
+  is rejected for disagreement. This binds the formatter and checker.
+- 22 report-path adapter mutation controls plus six formatter policy
+  controls cover the budget, cancel, digest placement, request/failure
+  counters, `partial`, early `pub`, `partdiag`, revert call and result,
+  media release, offline latch, revert budget, first-failure latch, stage
+  map, HS revert, RCG clock, `rverified`, winning width, `hz`, and the
+  formatter fields/prefixes.
+- `test-gta4l-emmc-evidence.py` runs a synthetic `--mode speed` dispatch
+  case; `test-gta4l-emmc-evidence-counts.py` now derives and checks the
+  block scenario/mutation counts; the normalizer self-test joins a wrapped
+  746-byte SPEED line at 80 and 120 columns.
+
+Source re-read. Every `start()` speed exit clears the start budget before
+its one first-latched stage and runs the combined revert only after HS was
+attempted; `speedRecover()` re-arms 9,500 ms and records all four revert
+fields even when the revert fails; `runSpeed()` hashes only after a complete
+pass, keeps the first failure stage, and reports the measured pass bytes,
+ticks, digests, request/failure counters and discovery diagnostic; the
+watchdog formats the same struct under the 1,586-byte bound. The report sum
+matches the static asserts and the 30,000 ms watchdog margin.
+
+Build readiness: both block sources compile with the kernel compile records
+and qualified storage headers. The consumer probe still has **187** imports,
+and `PROBE_IMPORTS`/the section split are unchanged. Archive generation
+stops at the expected stale storage-ABI audit: the recorded candidate does
+not match the current `kernel.macho`. The current candidate also does not
+export the three core symbols the adapter now references
+(`gta4l_emmc_deadline_arm`, `gta4l_emmc_deadline_clear`,
+`gta4l_emmc_recover_width_and_timing`), so the archive import check waits for
+the same B6 candidate rebuild. B6 rebuilds the candidate, re-runs the audit
+and reconciles the archive; no archive from this batch is used for a boot.
+
+The block suite result for this batch is recorded with the B5 gates in
+`docs/emmc-driver.md` §5.3.102 and `porting.toml`. All work in this
+subsection is host-only: no candidate build, flash, device access or boot.
+
+### 8.6 S1 candidate (2026-11-13)
+
+Built from the committed tree at `5d82708`; the working tree was clean at
+packaging and flash time. The native kernel was built without the block
+archive first, audited, then relinked against the new storage-ABI directory
+until the candidate and the archive import check reached a fixpoint.
+
+| Input | Value |
+| --- | --- |
+| Source commit | `5d82708` |
+| Candidate kernel | `a2fdd9452ea535be1179c8f9c6a7b4da91f81d7aab5ea841d213c381c6fe12a0` |
+| Storage-ABI artifacts | `storage-abi-a2fdd9452ea5` (`test-gta4l-storage-abi.py` PASS) |
+| Block archive | `03e581e5f5a014fb51249c985b277bf21d708be81e192ee921f7857b93a184d2`, requalified against the final kernel |
+| Diagnostic | `emmc-block-3-speed`, `gta4l-emmc-block=3 gta4l-emmc-speed=1` |
+| Data ramdisk | `fs-timer-hold` fixture, 57,344 bytes, `327ac826…`, owner trust cache |
+| Payload | `d8967f74884e98ba5896b53f99922e8736535b102fa1b28abcd92f4aa8cad0c9` (83,886,080 bytes) |
+| BOOT image | `805a5b66312a8fbc69864c472fabd0c4c3b3edc26831a33187c1e33bacb63fba` (85,688,320 bytes) |
+| BOOT gate | PASS, 17/17 `check-gta4l-boot-image.py` checks against the v5 baseline `ce4d76e8…`, payload bound by `--expected-ramdisk-sha256` |
+| Report digest source | first 4,096 bytes of the final image, `19b66b41401e75a6e561f11ecc8a5071e1713b09f81bd7833f89629438487f21` |
+
+The ABI chain needed four relinks (`9abaefdb` → `3882e089` → `25a48026` →
+`fbf14156` → `a2fdd945`) because the block archive's imported symbol set and
+the kernel's exported set moved together. The archive was rebuilt once more
+against the final kernel and its sha256 did not change, so the packaged
+payload used the qualified archive. The payload contract passed 91 checks,
+including `speed_requires_block_three` and the speed conflicts with the
+other instruments.
+
+## 9. Run (2026-11-13)
+
+Flash. BOOT only, `mmcblk0p69` on a 100,663,296-byte partition. TWRP
+3.7.1, battery 100%, adb state `recovery`. The read-only preflight
+matched the protected baseline: BOOT full `7e209188…`, partition-end last
+1 KiB `d737414c…`, RECOVERY `14e11370…`, EFS `51fa824c…`, sec_efs
+`3a265d58…`. The write covered 20,920 blocks; the postflight read
+`5342e715…` for the full partition with the image prefix `805a5b66…`, the
+same tail and last 1 KiB, and unchanged protected partitions. Record:
+`flash-record.json` (`result=pass`) in the gitignored evidence directory.
+
+Boot accounting. One boot, zero pre-identification stops. The owner booted
+once and returned to TWRP after the report panic; the cold/warm class and
+the boot ordinal were not recorded.
+
+Report (owner transcription, normalized at 66 columns, then two
+owner-confirmed character fixes: `hswerified`→`hsverified` and `Gta41`→
+`Gta4l`; no value was repaired by the normalizer):
+
+| Line | Values |
+| --- | --- |
+| REPORT | `rc=0 stop=0 mode=3 blocks=61071360 bs=512 bytes=31268536320 wid=0 tim=0 clk=400000` |
+| DRV | `online=1 wp=1 reads=17 blocks=45 fails=0 max=8` |
+| XFER | `req=45 c17=7 c18=19 c18b=38 cfail=0 stops=19 sfail=0 last_stop=0` |
+| MEDIA | `whole=1 base=0 size=31268536320 content=GUID_partition_scheme writable=0` |
+| SPEED | `hs=1 hsrb=0 hsa=1 rcg=0000020b hispd=00 wtry=8 wfall=0 wroll=0 wid=8 verified=1 hb=00 ha=20 cmd6=1 base=1 bytes1=4096 ticks1=55912 hz=19200000 dig1=19b66b41401e75a6e561f11ecc8a5071 bytes2=4096 ticks2=46348 dig2=19b66b41401e75a6e561f11ecc8a5071 req=8 fails=0 cancel=0 budget=0 partial=0 pub=1 partdiag=0 revert=1 rverified=1 rhb=20 rha=00 rcmd6=2 rstatus=0 hsrevert=1 hsverified=1 rhsb=1 rhs=0 rclk=400000 limit=64 seg=1 cap=61071360` |
+| SNAP | `locked=1` |
+| FAIL | `valid=0 stage=0 code=0 block=0 error=0 @Gta4lEmmcBlock.cpp:9070` |
+
+Every §3.5 term holds. `ha=20` is exactly the 8-bit host bit, `hb=00` and
+`rha=00` carry no width bits, `rhb=20` still reports the wide width at the
+revert, and `rclk=400000` with `wid=0 tim=0` is the reverted controller.
+The panic site is the intentional terminal report stop, not a fault.
+
+Host checks. `check-gta4l-speed-evidence.py --image
+<final BOOT image> --report <corrected normalized report>` passes and
+reports `SPEED digest and fields match 19b66b41…`. The same checker rejects
+the uncorrected transcript (`missing fields hsverified`) and a
+one-character `dig2` mutation (`dig1 and dig2 disagree`). The raw transcript,
+the normalizer join log (4 joins, 0 warnings) and the correction note are in
+the gitignored evidence directory.
+
+Post-boot re-measure (read-only). The partition still reads
+`5342e715…`, the image prefix `805a5b66…`, the tail `ad7facb2…`, the
+partition-end last 1 KiB `d737414c…`; RECOVERY, EFS and sec_efs are
+unchanged; battery 100%. The boot did not write BOOT.
+
+Measured transfer. `hz=19200000` is the 19.2 MHz XO counter. Pass 1 is
+55,912 ticks = **2.912 ms** for 4,096 bytes (1.41 MB/s); pass 2 is 46,348
+ticks = **2.414 ms** (1.70 MB/s). The pass-1/pass-2 difference is consistent
+with cold-path cost, not a data error, because both digests match the host.
+
+| Configuration | Time for 4 KiB | Ratio |
+| --- | ---: | ---: |
+| 1-bit SDR, 400 kHz (bound, no measured sample) | ≥ 81.9 ms | ≥ 28× slower |
+| 8-bit SDR, 50 MHz (wire time only) | 81.9 µs | 0.029× |
+| **measured pass 2** | **2.414 ms** | 1× |
+
+The wire occupies 3.4% of the measured pass time, so about 96.6% is
+per-request overhead: four 1 KiB requests per pass, each a CMD18 plus a
+CMD12 stop over two-block PIO chunks and the IOKit request path. The
+measured cost is about 0.60–0.73 ms per 1 KiB request.
+
+Consequence for S2. At 0.6 ms per KiB, the 85,688,320-byte BOOT region
+needs about 50 s, which cannot fit a report thread under the 30 s watchdog.
+S2 must reduce per-request overhead before it can stream the region; until
+then it reports a verified prefix.
+
+## 10. Verdict
+
+Result: **PASS**.
+
+Qualified claim. On one owner boot of the image `805a5b66…`, the block
+driver entered HS timing at the 50 MHz RCG row, switched the card and host
+to 8-bit on the first attempt with read-only EXT_CSD verification, read the
+first 4 KiB of the published BOOT partition through the partition IOMedia
+in two passes of four two-block requests with zero failures, cancellation,
+budget expiry or partial transfers, reproduced the host digest of the final
+image in both passes, and reverted to 1-bit / legacy timing / 400 kHz with
+the card and host verified. `HISPD` stayed clear and the 1-bit baseline
+read passed.
+
+Not qualified. Sustained or arbitrary I/O, any throughput claim beyond the
+two 4 KiB passes, the full BOOT region, writes, persistence, DMA,
+interrupts, CQE, HS200/HS400, a filesystem, a mount, initialization
+reliability, repeatability (one boot), the electrical timing margin, pad
+state and DLL state, and lifetime fast mode (S3). The absolute 1-bit
+reference time in §9 is a wire-time bound, not a sample.
+
+Failure class: none.
+
+## 11. Follow-up
+
+1. S2 (`bulk`) with the S1 numbers as the baseline. Add a per-request
+   breakdown (command issue, data poll, CMD12, IOKit round trip) before
+   changing the transport shape, then decide between a larger
+   `GTA4L_EMMC_BLOCK_CHUNK_BLOCKS`, a larger advertised `limit`, or both.
+   Re-derive the in-flight term and the report-thread sum from source and
+   add the `static_assert` against the watchdog.
+2. Keep the verified pre-report revert and every S1 success field in the S2
+   image so S1 coverage is re-asserted on every boot.
+3. Refresh the protected baseline to the post-flash BOOT state before the
+   next flash; the pre-flash value `7e209188…` is superseded by `5342e715…`.
+4. Do not boot the S1 image again: its verdict is recorded and the boot
+   budget is consumed.
+
+## 12. Erratum (2026-11-13)
+
+S2 run 1 measured the phase breakdown directly at 64-block requests and
+refutes §9's attribution of 96.6% to per-request overhead. In that run 279
+requests moved 9,142,272 bytes; inhibit, command and stop together were
+under 1% of the stream, the IOKit path was under 1%, and the CMD18 data
+phase was 3.296 s of the 4.014 s stream. The data phase is 184.6 µs per
+512-byte block, 18.0× the 10.24 µs wire time at 8-bit / 50 MHz.
+
+S1's 0.60–0.73 ms per-1 KiB request remains the S1 observation, and the
+per-request cost is real at 1 KiB. It is not the dominant term once
+requests are 64 blocks. The open cause is the effective card clock/width
+or the FIFO drain cost, measured by S2.1. See
+`docs/emmc-b8-overhead-decision-2026-11-13.md` §10 and
+`docs/emmc-driver.md` §5.3.106.

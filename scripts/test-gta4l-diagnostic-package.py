@@ -97,6 +97,115 @@ def main():
         assert not bad.exists()
         print('PASS wrong expected diagnostic refused by payload contract')
 
+        bad = tmp / 'partobs-diagnostic.img'
+        result = run(base_args(bad, tmp / 'partobs-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-1-partobs'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS partobs personality accepted and forwarded to the contract')
+
+        bad = tmp / 'partcmp-diagnostic.img'
+        result = run(base_args(bad, tmp / 'partcmp-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-1-partcmp'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS partcmp personality accepted and forwarded to the contract')
+
+        bad = tmp / 'partread-diagnostic.img'
+        result = run(base_args(bad, tmp / 'partread-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-1-partread'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS partread personality accepted and forwarded to the contract')
+
+        bad = tmp / 'deblock-diagnostic.img'
+        result = run(base_args(bad, tmp / 'deblock-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-1-deblock'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS deblock personality accepted and forwarded to the contract')
+
+        bad = tmp / 'breakup-diagnostic.img'
+        result = run(base_args(bad, tmp / 'breakup-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-1-breakup'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS breakup personality accepted and forwarded to the contract')
+
+        bad = tmp / 'sweep-diagnostic.img'
+        result = run(base_args(bad, tmp / 'sweep-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-1-sweep'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS sweep personality accepted and forwarded to the contract')
+
+        bad = tmp / 'consume-diagnostic.img'
+        result = run(base_args(bad, tmp / 'consume-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-consume'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS consume personality accepted and forwarded to the contract')
+
+        bad = tmp / 'width4-diagnostic.img'
+        result = run(base_args(bad, tmp / 'width4-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-width4'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS width4 personality accepted and forwarded to the contract')
+
+        bad = tmp / 'widthhold-diagnostic.img'
+        result = run(base_args(bad, tmp / 'widthhold-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-widthhold'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS widthhold personality accepted and forwarded to the '
+              'contract')
+
+        bad = tmp / 'widthpub-diagnostic.img'
+        result = run(base_args(bad, tmp / 'widthpub-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-widthpub'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS widthpub personality accepted and forwarded to the '
+              'contract')
+
+        bad = tmp / 'speed-diagnostic.img'
+        result = run(base_args(bad, tmp / 'speed-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-speed'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS speed personality accepted and forwarded to the '
+              'contract')
+
+        bad = tmp / 'bulk-diagnostic.img'
+        result = run(base_args(bad, tmp / 'bulk-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-bulk'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS bulk personality accepted and forwarded to the '
+              'contract')
+
+        bad = tmp / 'live-diagnostic.img'
+        result = run(base_args(bad, tmp / 'live-diagnostic.json')
+                     + ['--expect-diagnostic', 'emmc-block-3-live'])
+        assert result.returncode != 0
+        assert 'payload/ADT contract' in result.stderr, result.stderr
+        assert not bad.exists()
+        print('PASS live personality accepted and forwarded to the '
+              'contract')
+
         failed_payload = (REPO / 'out/gta4l/ram-root-sdhci-host-init-evidence/'
                           'payload.img')
         if failed_payload.is_file():

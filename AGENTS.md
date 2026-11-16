@@ -3,6 +3,20 @@
 This repository owns the gta4l board DTS, peripheral wiring, component
 selections, firmware inputs, partition layout and packaging.
 
+## Privacy (strict, always applies)
+
+This repository is public. Never commit or push device serial numbers, unique
+device identifiers, usernames, account names, hostnames, SSH targets, e-mail
+addresses, IP addresses, VPN names or absolute home paths. Use `$HOME`, a
+relative path or a neutral placeholder. Raw evidence that needs an identifier
+stays outside the tracked tree and is referred to by path/hash, never by the
+private value. The same rule applies to commit messages, tags, branch names,
+code comments, test fixtures and generated records. Before every commit, run
+the checks in `.opencode/rules/privacy.md` and require no unexplained hits. If
+private data is already in published history, stop and report it; rewriting
+published history requires explicit owner approval, a backup bundle and a
+coordinated force-push.
+
 ## Read first
 
 Read this README and the following UniXNU documentation before changing the port:
@@ -42,6 +56,14 @@ Run from UniXNU:
 ./unixnu build payload --unique-chip-id <hex>
 ./unixnu bootimg
 ```
+
+The canonical packaging entry point is `scripts/package.sh` (verbatim from
+UniXNU `templates/package.sh`). It reads `[package]` and `[bootimg] dtb` from
+`board.toml`; the boot DTB is staged by
+`scripts/prepare-gta4l-boot-dtb.py`. The default 192 MiB payload makes the
+release boot image exceed the 100,663,296-byte BOOT partition, so release
+verify fails by design; use the diagnostic builder for on-device images. See
+`docs/upstream-packaging.md`.
 
 For the Mu-Silicium payload, include `UniXNURamDiskDxe`, DiskIoDxe and FAT
 support in the firmware DSC and FDF. Follow

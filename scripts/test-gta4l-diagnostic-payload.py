@@ -107,6 +107,17 @@ def common_arguments(unixnu, uefi, device, data, trust):
     ]
 
 
+def write_fixture_manifest(base, diagnostic='fs-timer-hold', hold=None):
+    fixture = base / 'fixture.json'
+    record = {'diagnostic': diagnostic}
+    if hold is not None:
+        record['hold_after_success'] = hold
+    elif diagnostic == 'fs-timer-hold':
+        record['hold_after_success'] = True
+    fixture.write_text(json.dumps(record) + '\n')
+    return fixture
+
+
 def test_explicit_kernel(base):
     unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
     record = base / 'argv.json'
@@ -192,8 +203,1422 @@ def test_missing_kernel(base):
     print('PASS missing kernel is rejected before the build')
 
 
+def check_emmc_probe(base, number):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    name = f'emmc-probe-{number}'
+    argument = f'gta4l-emmc-probe={number}'
+    args[args.index('--diagnostic') + 1] = name
+    code = run(module, [
+        *args,
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    assert kernel_args[-1] == argument
+    assert json.loads(manifest.read_text())['diagnostic_argument'] == \
+        argument
+    print(f'PASS {name} maps to {argument}')
+
+
+def test_emmc_probe_4(base):
+    check_emmc_probe(base, 4)
+
+
+def test_emmc_probe_5(base):
+    check_emmc_probe(base, 5)
+
+
+def test_emmc_probe_6(base):
+    check_emmc_probe(base, 6)
+
+
+def test_emmc_probe_7(base):
+    check_emmc_probe(base, 7)
+
+
+def test_emmc_probe_8(base):
+    check_emmc_probe(base, 8)
+
+
+def test_emmc_probe_9(base):
+    check_emmc_probe(base, 9)
+
+
+def test_emmc_probe_10(base):
+    check_emmc_probe(base, 10)
+
+
+def test_emmc_probe_11(base):
+    check_emmc_probe(base, 11)
+
+
+def test_emmc_probe_12(base):
+    check_emmc_probe(base, 12)
+
+
+def test_emmc_probe_13(base):
+    check_emmc_probe(base, 13)
+
+
+def test_emmc_probe_14(base):
+    check_emmc_probe(base, 14)
+
+
+def test_emmc_probe_15(base):
+    check_emmc_probe(base, 15)
+
+
+def test_emmc_probe_16(base):
+    check_emmc_probe(base, 16)
+
+
+def test_emmc_block_1(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1'
+    code = run(module, [
+        *args,
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    assert kernel_args[-1] == 'gta4l-emmc-block=1'
+    assert json.loads(manifest.read_text())['diagnostic_argument'] == \
+        'gta4l-emmc-block=1'
+    print('PASS emmc-block-1 maps to gta4l-emmc-block=1')
+
+
+def test_emmc_block_3(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3'
+    code = run(module, [
+        *args,
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    assert kernel_args[-1] == 'gta4l-emmc-block=3'
+    assert json.loads(manifest.read_text())['diagnostic_argument'] == \
+        'gta4l-emmc-block=3'
+    print('PASS emmc-block-3 maps to gta4l-emmc-block=3')
+
+
+def check_observation_personality(base, personality, block_mode,
+                                  modifier='partobs', modifier_value='1'):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base)
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = personality
+    code = run(module, [
+        *args,
+        '--data-ramdisk-manifest', str(fixture),
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    modifier_argument = f'gta4l-emmc-{modifier}={modifier_value}'
+    assert kernel_args[-2:] == [f'gta4l-emmc-block={block_mode}',
+                                modifier_argument], kernel_args
+    argument = f'gta4l-emmc-block={block_mode} {modifier_argument}'
+    manifest_record = json.loads(manifest.read_text())
+    assert manifest_record['diagnostic_argument'] == argument
+    assert manifest_record['data_ramdisk']['diagnostic'] == 'fs-timer-hold'
+    assert manifest_record['data_ramdisk']['hold_after_success'] is True
+    print(f'PASS {personality} maps to {argument} with the hold fixture')
+
+
+def test_partobs_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-partobs'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError('the early-panic fixture was accepted for partobs')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS partobs rejects the early-panic fs-timer fixture')
+
+
+def test_partobs_rejects_missing_fixture_manifest(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1-partobs'
+    try:
+        run(module, [
+            *args,
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert '--data-ramdisk-manifest' in str(error), error
+    else:
+        raise AssertionError('partobs was accepted without a fixture manifest')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS partobs rejects a missing fixture manifest')
+
+
+def test_fixture_manifest_hold_mismatch(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    fixture = write_fixture_manifest(base, 'fs-timer-hold', hold=False)
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-partobs'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(base / 'payload.img'),
+            '--manifest', str(base / 'payload.manifest.json'),
+        ])
+    except SystemExit as error:
+        assert 'disagrees' in str(error), error
+    else:
+        raise AssertionError('a conflicting hold flag was accepted')
+    print('PASS fixture manifest hold/diagnostic mismatch is rejected')
+
+
+def test_emmc_block_1_partobs(base):
+    check_observation_personality(base, 'emmc-block-1-partobs', 1)
+
+
+def test_emmc_block_3_partobs(base):
+    check_observation_personality(base, 'emmc-block-3-partobs', 3)
+
+
+def test_emmc_block_1_partcmp(base):
+    check_observation_personality(base, 'emmc-block-1-partcmp', 1,
+                                  'partcmp')
+
+
+def test_emmc_block_3_partcmp(base):
+    check_observation_personality(base, 'emmc-block-3-partcmp', 3,
+                                  'partcmp')
+
+
+def test_emmc_block_1_partread(base):
+    check_observation_personality(base, 'emmc-block-1-partread', 1,
+                                  'partread')
+
+
+def test_emmc_block_3_partread(base):
+    check_observation_personality(base, 'emmc-block-3-partread', 3,
+                                  'partread')
+
+
+def test_emmc_block_1_deblock(base):
+    check_observation_personality(base, 'emmc-block-1-deblock', 1,
+                                  'deblock')
+
+
+def test_emmc_block_3_deblock(base):
+    check_observation_personality(base, 'emmc-block-3-deblock', 3,
+                                  'deblock')
+
+
+def test_emmc_block_1_breakup(base):
+    check_observation_personality(base, 'emmc-block-1-breakup', 1,
+                                  'breakup')
+
+
+def test_emmc_block_3_breakup(base):
+    check_observation_personality(base, 'emmc-block-3-breakup', 3,
+                                  'breakup')
+
+
+def test_emmc_block_1_sweep(base):
+    check_observation_personality(base, 'emmc-block-1-sweep', 1, 'sweep')
+
+
+def test_emmc_block_3_sweep(base):
+    check_observation_personality(base, 'emmc-block-3-sweep', 3, 'sweep')
+
+
+def test_emmc_block_3_consume(base):
+    check_observation_personality(base, 'emmc-block-3-consume', 3, 'consume')
+
+
+def test_emmc_block_3_width4(base):
+    check_observation_personality(base, 'emmc-block-3-width4', 3, 'width', 4)
+
+
+def test_emmc_block_3_widthhold(base):
+    check_observation_personality(base, 'emmc-block-3-widthhold', 3,
+                                  'widthhold')
+
+
+def test_emmc_block_3_widthpub(base):
+    check_observation_personality(base, 'emmc-block-3-widthpub', 3,
+                                  'widthpub')
+
+
+def test_emmc_block_3_speed(base):
+    check_observation_personality(base, 'emmc-block-3-speed', 3, 'speed')
+
+
+def test_emmc_block_3_bulk(base):
+    check_observation_personality(base, 'emmc-block-3-bulk', 3, 'bulk')
+
+
+def test_emmc_block_3_windows(base):
+    check_observation_personality(base, 'emmc-block-3-windows', 3,
+                                  'windows')
+
+
+def test_emmc_block_3_verify(base):
+    check_observation_personality(base, 'emmc-block-3-verify', 3,
+                                  'verify')
+
+
+def test_emmc_block_3_live(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base)
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-live'
+    code = run(module, [
+        *args,
+        '--data-ramdisk-manifest', str(fixture),
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    expected = ['gta4l-emmc-block=3', 'gta4l-emmc-bulk=1',
+                'gta4l-emmc-dma=1', 'gta4l-emmc-live=1']
+    assert kernel_args[-4:] == expected, kernel_args
+    argument = ' '.join(expected)
+    manifest_record = json.loads(manifest.read_text())
+    assert manifest_record['diagnostic_argument'] == argument
+    assert manifest_record['data_ramdisk']['diagnostic'] == 'fs-timer-hold'
+    assert manifest_record['data_ramdisk']['hold_after_success'] is True
+    print(f'PASS emmc-block-3-live maps to {argument} with the hold fixture')
+
+
+def test_partcmp_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1-partcmp'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError('the early-panic fixture was accepted for partcmp')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS partcmp rejects the early-panic fs-timer fixture')
+
+
+def test_partread_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1-partread'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for partread')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS partread rejects the early-panic fs-timer fixture')
+
+
+def test_deblock_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1-deblock'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for deblock')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS deblock rejects the early-panic fs-timer fixture')
+
+
+def test_breakup_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1-breakup'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for breakup')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS breakup rejects the early-panic fs-timer fixture')
+
+
+def test_sweep_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-1-sweep'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for sweep')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS sweep rejects the early-panic fs-timer fixture')
+
+
+def test_consume_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-consume'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for consume')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS consume rejects the early-panic fs-timer fixture')
+
+
+def test_width4_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-width4'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for width4')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS width4 rejects the early-panic fs-timer fixture')
+
+
+def test_widthhold_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-widthhold'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for widthhold')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS widthhold rejects the early-panic fs-timer fixture')
+
+
+def test_widthpub_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-widthpub'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for widthpub')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS widthpub rejects the early-panic fs-timer fixture')
+
+
+def test_speed_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-speed'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for speed')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS speed rejects the early-panic fs-timer fixture')
+
+
+def test_bulk_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-bulk'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for bulk')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS bulk rejects the early-panic fs-timer fixture')
+
+
+def test_live_rejects_early_panic_fixture(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base, 'fs-timer')
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-live'
+    try:
+        run(module, [
+            *args,
+            '--data-ramdisk-manifest', str(fixture),
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'fs-timer-hold' in str(error), error
+    else:
+        raise AssertionError(
+            'the early-panic fixture was accepted for live')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS live rejects the early-panic fs-timer fixture')
+
+
+def test_diagnostic_contract(_base):
+    spec = importlib.util.spec_from_file_location(
+        'gta4l_payload_checker', ROOT / 'scripts/check-gta4l-payload.py')
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    def checks(args, expected='any'):
+        return checker.diagnostic_contract(args, expected)
+
+    good = checks('rd=md0 gta4l-emmc-block=1', 'emmc-block-1')
+    assert all(good.values()), good
+    chunked = checks('rd=md0 gta4l-emmc-block=3', 'emmc-block-3')
+    assert all(chunked.values()), chunked
+    duplicate = checks('gta4l-emmc-block=1 gta4l-emmc-block=1')
+    assert duplicate['exactly_one_diagnostic_argument']
+    assert not duplicate['exactly_one_block_mode_token']
+    duplicate_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-block=3')
+    assert duplicate_chunked['exactly_one_diagnostic_argument']
+    assert not duplicate_chunked['exactly_one_block_mode_token']
+    mixed = checks('gta4l-emmc-probe=1 gta4l-emmc-block=1')
+    assert not mixed['exactly_one_diagnostic_argument']
+    mixed_chunked = checks('gta4l-emmc-probe=1 gta4l-emmc-block=3')
+    assert not mixed_chunked['exactly_one_diagnostic_argument']
+    malformed_probe = checks('gta4l-emmc-block=1 gta4l-emmc-probe=99')
+    assert malformed_probe['exactly_one_diagnostic_argument']
+    assert not malformed_probe['no_probe_token_in_block_mode']
+    stray_block = checks('gta4l-emmc-probe=1 gta4l-emmc-block=2')
+    assert stray_block['exactly_one_diagnostic_argument']
+    assert not stray_block['no_block_token_outside_block_mode']
+    deferred = checks('gta4l-emmc-block=2')
+    assert not deferred['exactly_one_diagnostic_argument']
+    wrong = checks('gta4l-emmc-block=1', 'emmc-probe-1')
+    assert not wrong['emmc-probe-1_diagnostic_selected']
+    observed = checks('rd=md0 gta4l-emmc-block=1 gta4l-emmc-partobs=1',
+                      'emmc-block-1-partobs')
+    assert all(observed.values()), observed
+    observed_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-partobs=1', 'emmc-block-3-partobs')
+    assert all(observed_chunked.values()), observed_chunked
+    orphan = checks('gta4l-emmc-probe=1 gta4l-emmc-partobs=1')
+    assert not orphan['no_partobs_token_outside_block_mode']
+    duplicate_partobs = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-partobs=1 gta4l-emmc-partobs=1',
+        'emmc-block-1-partobs')
+    assert not duplicate_partobs['at_most_one_partobs_token']
+    bad_value = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=2',
+                       'emmc-block-1-partobs')
+    assert not bad_value['partobs_value_one']
+    assert not bad_value['emmc-block-1-partobs_diagnostic_selected']
+    plain_expected = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=1',
+                            'emmc-block-1')
+    assert not plain_expected['emmc-block-1_diagnostic_selected']
+    missing_partobs = checks('gta4l-emmc-block=1', 'emmc-block-1-partobs')
+    assert not missing_partobs['emmc-block-1-partobs_diagnostic_selected']
+    compared = checks('rd=md0 gta4l-emmc-block=1 gta4l-emmc-partcmp=1',
+                      'emmc-block-1-partcmp')
+    assert all(compared.values()), compared
+    compared_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-partcmp=1', 'emmc-block-3-partcmp')
+    assert all(compared_chunked.values()), compared_chunked
+    orphan_partcmp = checks('gta4l-emmc-probe=1 gta4l-emmc-partcmp=1')
+    assert not orphan_partcmp['no_partcmp_token_outside_block_mode']
+    duplicate_partcmp = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-partcmp=1 gta4l-emmc-partcmp=1',
+        'emmc-block-1-partcmp')
+    assert not duplicate_partcmp['at_most_one_partcmp_token']
+    bad_partcmp_value = checks('gta4l-emmc-block=1 gta4l-emmc-partcmp=2',
+                               'emmc-block-1-partcmp')
+    assert not bad_partcmp_value['partcmp_value_one']
+    assert not bad_partcmp_value[
+        'emmc-block-1-partcmp_diagnostic_selected']
+    both_modifiers = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=1 '
+                            'gta4l-emmc-partcmp=1')
+    assert not both_modifiers['partobs_partcmp_exclusive']
+    plain_partcmp_expected = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-partcmp=1', 'emmc-block-1')
+    assert not plain_partcmp_expected['emmc-block-1_diagnostic_selected']
+    missing_partcmp = checks('gta4l-emmc-block=1', 'emmc-block-1-partcmp')
+    assert not missing_partcmp['emmc-block-1-partcmp_diagnostic_selected']
+    read = checks('rd=md0 gta4l-emmc-block=1 gta4l-emmc-partread=1',
+                  'emmc-block-1-partread')
+    assert all(read.values()), read
+    read_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-partread=1',
+        'emmc-block-3-partread')
+    assert all(read_chunked.values()), read_chunked
+    orphan_partread = checks('gta4l-emmc-probe=1 gta4l-emmc-partread=1')
+    assert not orphan_partread['no_partread_token_outside_block_mode']
+    duplicate_partread = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-partread=1 gta4l-emmc-partread=1',
+        'emmc-block-1-partread')
+    assert not duplicate_partread['at_most_one_partread_token']
+    bad_partread_value = checks('gta4l-emmc-block=1 gta4l-emmc-partread=2',
+                                'emmc-block-1-partread')
+    assert not bad_partread_value['partread_value_one']
+    assert not bad_partread_value[
+        'emmc-block-1-partread_diagnostic_selected']
+    partread_partobs = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=1 '
+                              'gta4l-emmc-partread=1')
+    assert not partread_partobs['partread_partobs_exclusive']
+    partread_partcmp = checks('gta4l-emmc-block=1 gta4l-emmc-partcmp=1 '
+                              'gta4l-emmc-partread=1')
+    assert not partread_partcmp['partread_partcmp_exclusive']
+    plain_partread_expected = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-partread=1', 'emmc-block-1')
+    assert not plain_partread_expected['emmc-block-1_diagnostic_selected']
+    missing_partread = checks('gta4l-emmc-block=1', 'emmc-block-1-partread')
+    assert not missing_partread[
+        'emmc-block-1-partread_diagnostic_selected']
+    deblocked = checks('rd=md0 gta4l-emmc-block=1 gta4l-emmc-deblock=1',
+                       'emmc-block-1-deblock')
+    assert all(deblocked.values()), deblocked
+    deblocked_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-deblock=1',
+        'emmc-block-3-deblock')
+    assert all(deblocked_chunked.values()), deblocked_chunked
+    orphan_deblock = checks('gta4l-emmc-probe=1 gta4l-emmc-deblock=1')
+    assert not orphan_deblock['no_deblock_token_outside_block_mode']
+    duplicate_deblock = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-deblock=1 gta4l-emmc-deblock=1',
+        'emmc-block-1-deblock')
+    assert not duplicate_deblock['at_most_one_deblock_token']
+    bad_deblock_value = checks('gta4l-emmc-block=1 gta4l-emmc-deblock=2',
+                               'emmc-block-1-deblock')
+    assert not bad_deblock_value['deblock_value_one']
+    assert not bad_deblock_value[
+        'emmc-block-1-deblock_diagnostic_selected']
+    deblock_partobs = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=1 '
+                             'gta4l-emmc-deblock=1')
+    assert not deblock_partobs['deblock_partobs_exclusive']
+    deblock_partcmp = checks('gta4l-emmc-block=1 gta4l-emmc-partcmp=1 '
+                             'gta4l-emmc-deblock=1')
+    assert not deblock_partcmp['deblock_partcmp_exclusive']
+    deblock_partread = checks('gta4l-emmc-block=1 gta4l-emmc-partread=1 '
+                              'gta4l-emmc-deblock=1')
+    assert not deblock_partread['deblock_partread_exclusive']
+    plain_deblock_expected = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-deblock=1', 'emmc-block-1')
+    assert not plain_deblock_expected['emmc-block-1_diagnostic_selected']
+    missing_deblock = checks('gta4l-emmc-block=1', 'emmc-block-1-deblock')
+    assert not missing_deblock[
+        'emmc-block-1-deblock_diagnostic_selected']
+    broken = checks('rd=md0 gta4l-emmc-block=1 gta4l-emmc-breakup=1',
+                    'emmc-block-1-breakup')
+    assert all(broken.values()), broken
+    broken_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-breakup=1',
+        'emmc-block-3-breakup')
+    assert all(broken_chunked.values()), broken_chunked
+    orphan_breakup = checks('gta4l-emmc-probe=1 gta4l-emmc-breakup=1')
+    assert not orphan_breakup['no_breakup_token_outside_block_mode']
+    duplicate_breakup = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-breakup=1 gta4l-emmc-breakup=1',
+        'emmc-block-1-breakup')
+    assert not duplicate_breakup['at_most_one_breakup_token']
+    bad_breakup_value = checks('gta4l-emmc-block=1 gta4l-emmc-breakup=2',
+                               'emmc-block-1-breakup')
+    assert not bad_breakup_value['breakup_value_one']
+    assert not bad_breakup_value[
+        'emmc-block-1-breakup_diagnostic_selected']
+    breakup_partobs = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=1 '
+                             'gta4l-emmc-breakup=1')
+    assert not breakup_partobs['breakup_partobs_exclusive']
+    breakup_partcmp = checks('gta4l-emmc-block=1 gta4l-emmc-partcmp=1 '
+                             'gta4l-emmc-breakup=1')
+    assert not breakup_partcmp['breakup_partcmp_exclusive']
+    breakup_partread = checks('gta4l-emmc-block=1 gta4l-emmc-partread=1 '
+                              'gta4l-emmc-breakup=1')
+    assert not breakup_partread['breakup_partread_exclusive']
+    breakup_deblock = checks('gta4l-emmc-block=1 gta4l-emmc-deblock=1 '
+                             'gta4l-emmc-breakup=1')
+    assert not breakup_deblock['breakup_deblock_exclusive']
+    plain_breakup_expected = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-breakup=1', 'emmc-block-1')
+    assert not plain_breakup_expected['emmc-block-1_diagnostic_selected']
+    missing_breakup = checks('gta4l-emmc-block=1', 'emmc-block-1-breakup')
+    assert not missing_breakup[
+        'emmc-block-1-breakup_diagnostic_selected']
+    broken_sweep = checks('rd=md0 gta4l-emmc-block=1 gta4l-emmc-sweep=1',
+                          'emmc-block-1-sweep')
+    assert all(broken_sweep.values()), broken_sweep
+    broken_sweep_chunked = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-sweep=1',
+        'emmc-block-3-sweep')
+    assert all(broken_sweep_chunked.values()), broken_sweep_chunked
+    orphan_sweep = checks('gta4l-emmc-probe=1 gta4l-emmc-sweep=1')
+    assert not orphan_sweep['no_sweep_token_outside_block_mode']
+    duplicate_sweep = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-sweep=1 gta4l-emmc-sweep=1',
+        'emmc-block-1-sweep')
+    assert not duplicate_sweep['at_most_one_sweep_token']
+    bad_sweep_value = checks('gta4l-emmc-block=1 gta4l-emmc-sweep=2',
+                             'emmc-block-1-sweep')
+    assert not bad_sweep_value['sweep_value_one']
+    assert not bad_sweep_value['emmc-block-1-sweep_diagnostic_selected']
+    sweep_partobs = checks('gta4l-emmc-block=1 gta4l-emmc-partobs=1 '
+                           'gta4l-emmc-sweep=1')
+    assert not sweep_partobs['sweep_partobs_exclusive']
+    sweep_partcmp = checks('gta4l-emmc-block=1 gta4l-emmc-partcmp=1 '
+                           'gta4l-emmc-sweep=1')
+    assert not sweep_partcmp['sweep_partcmp_exclusive']
+    sweep_partread = checks('gta4l-emmc-block=1 gta4l-emmc-partread=1 '
+                            'gta4l-emmc-sweep=1')
+    assert not sweep_partread['sweep_partread_exclusive']
+    sweep_deblock = checks('gta4l-emmc-block=1 gta4l-emmc-deblock=1 '
+                           'gta4l-emmc-sweep=1')
+    assert not sweep_deblock['sweep_deblock_exclusive']
+    sweep_breakup = checks('gta4l-emmc-block=1 gta4l-emmc-breakup=1 '
+                           'gta4l-emmc-sweep=1')
+    assert not sweep_breakup['sweep_breakup_exclusive']
+    plain_sweep_expected = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-sweep=1', 'emmc-block-1')
+    assert not plain_sweep_expected['emmc-block-1_diagnostic_selected']
+    missing_sweep = checks('gta4l-emmc-block=1', 'emmc-block-1-sweep')
+    assert not missing_sweep['emmc-block-1-sweep_diagnostic_selected']
+    good_consume = checks('gta4l-emmc-block=3 gta4l-emmc-consume=1',
+                          'emmc-block-3-consume')
+    assert all(good_consume.values()), good_consume
+    orphan_consume = checks('gta4l-emmc-probe=1 gta4l-emmc-consume=1')
+    assert not orphan_consume['no_consume_token_outside_block_mode']
+    duplicate_consume = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-consume=1 '
+        'gta4l-emmc-consume=1', 'emmc-block-3-consume')
+    assert not duplicate_consume['at_most_one_consume_token']
+    bad_consume_value = checks('gta4l-emmc-block=3 gta4l-emmc-consume=2',
+                               'emmc-block-3-consume')
+    assert not bad_consume_value['consume_value_one']
+    assert not bad_consume_value['emmc-block-3-consume_diagnostic_selected']
+    consume_block_one = checks('gta4l-emmc-block=1 gta4l-emmc-consume=1')
+    assert not consume_block_one['consume_requires_block_three']
+    consume_partobs = checks('gta4l-emmc-block=3 gta4l-emmc-partobs=1 '
+                             'gta4l-emmc-consume=1')
+    assert not consume_partobs['consume_partobs_exclusive']
+    consume_partcmp = checks('gta4l-emmc-block=3 gta4l-emmc-partcmp=1 '
+                             'gta4l-emmc-consume=1')
+    assert not consume_partcmp['consume_partcmp_exclusive']
+    consume_partread = checks('gta4l-emmc-block=3 gta4l-emmc-partread=1 '
+                              'gta4l-emmc-consume=1')
+    assert not consume_partread['consume_partread_exclusive']
+    consume_deblock = checks('gta4l-emmc-block=3 gta4l-emmc-deblock=1 '
+                             'gta4l-emmc-consume=1')
+    assert not consume_deblock['consume_deblock_exclusive']
+    consume_breakup = checks('gta4l-emmc-block=3 gta4l-emmc-breakup=1 '
+                             'gta4l-emmc-consume=1')
+    assert not consume_breakup['consume_breakup_exclusive']
+    consume_sweep = checks('gta4l-emmc-block=3 gta4l-emmc-sweep=1 '
+                           'gta4l-emmc-consume=1')
+    assert not consume_sweep['consume_sweep_exclusive']
+    plain_consume_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-consume=1', 'emmc-block-3')
+    assert not plain_consume_expected['emmc-block-3_diagnostic_selected']
+    missing_consume = checks('gta4l-emmc-block=3', 'emmc-block-3-consume')
+    assert not missing_consume['emmc-block-3-consume_diagnostic_selected']
+    good_width = checks('gta4l-emmc-block=3 gta4l-emmc-width=4',
+                        'emmc-block-3-width4')
+    assert all(good_width.values()), good_width
+    orphan_width = checks('gta4l-emmc-probe=1 gta4l-emmc-width=4')
+    assert not orphan_width['no_width_token_outside_block_mode']
+    duplicate_width = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 gta4l-emmc-width=4',
+        'emmc-block-3-width4')
+    assert not duplicate_width['at_most_one_width_token']
+    for width in ('0', '1', '2', '3', '5', '8'):
+        bad_width_value = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-width={width}',
+            'emmc-block-3-width4')
+        assert not bad_width_value['width_value_four'], bad_width_value
+        assert not bad_width_value[
+            'emmc-block-3-width4_diagnostic_selected'], bad_width_value
+    width_block_one = checks('gta4l-emmc-block=1 gta4l-emmc-width=4',
+                             'emmc-block-3-width4')
+    assert not width_block_one['width_requires_block_three']
+    assert not width_block_one['emmc-block-3-width4_diagnostic_selected']
+    width_duplicate_block = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-block=3 gta4l-emmc-width=4',
+        'emmc-block-3-width4')
+    assert not width_duplicate_block['exactly_one_block_mode_token']
+    width_with_probe = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-block=3 gta4l-emmc-width=4',
+        'emmc-block-3-width4')
+    assert not width_with_probe['no_probe_token_in_block_mode']
+    assert not width_with_probe[
+        'emmc-block-3-width4_diagnostic_selected']
+    missing_width = checks('gta4l-emmc-block=3', 'emmc-block-3-width4')
+    assert not missing_width['emmc-block-3-width4_diagnostic_selected']
+    plain_width_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4', 'emmc-block-3')
+    assert not plain_width_expected['emmc-block-3_diagnostic_selected']
+    for modifier, key in (
+            ('partobs', 'width_partobs_exclusive'),
+            ('partcmp', 'width_partcmp_exclusive'),
+            ('partread', 'width_partread_exclusive'),
+            ('deblock', 'width_deblock_exclusive'),
+            ('breakup', 'width_breakup_exclusive'),
+            ('sweep', 'width_sweep_exclusive'),
+            ('consume', 'width_consume_exclusive')):
+        conflict = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-width=4', 'emmc-block-3-width4')
+        assert not conflict[key], conflict
+        assert not conflict[
+            'emmc-block-3-width4_diagnostic_selected'], conflict
+        smuggled = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-width=4', f'emmc-block-3-{modifier}')
+        assert not smuggled[
+            f'emmc-block-3-{modifier}_diagnostic_selected'], smuggled
+    good_widthhold = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1',
+        'emmc-block-3-widthhold')
+    assert all(good_widthhold.values()), good_widthhold
+    orphan_widthhold = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-widthhold=1')
+    assert not orphan_widthhold['no_widthhold_token_outside_block_mode']
+    duplicate_widthhold = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-widthhold=1', 'emmc-block-3-widthhold')
+    assert not duplicate_widthhold['at_most_one_widthhold_token']
+    for value in ('0', '2', '-1', '', 'true'):
+        bad_widthhold_value = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-widthhold={value}',
+            'emmc-block-3-widthhold')
+        assert not bad_widthhold_value['widthhold_value_one'], \
+            bad_widthhold_value
+        assert not bad_widthhold_value[
+            'emmc-block-3-widthhold_diagnostic_selected'], \
+            bad_widthhold_value
+    widthhold_block_one = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-widthhold=1',
+        'emmc-block-3-widthhold')
+    assert not widthhold_block_one['widthhold_requires_block_three']
+    assert not widthhold_block_one[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    widthhold_duplicate_block = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-block=3 '
+        'gta4l-emmc-widthhold=1', 'emmc-block-3-widthhold')
+    assert not widthhold_duplicate_block['exactly_one_block_mode_token']
+    widthhold_with_probe = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-block=3 gta4l-emmc-widthhold=1',
+        'emmc-block-3-widthhold')
+    assert not widthhold_with_probe['no_probe_token_in_block_mode']
+    assert not widthhold_with_probe[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    missing_widthhold = checks(
+        'gta4l-emmc-block=3', 'emmc-block-3-widthhold')
+    assert not missing_widthhold[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    plain_widthhold_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1', 'emmc-block-3')
+    assert not plain_widthhold_expected['emmc-block-3_diagnostic_selected']
+    for modifier, key in (
+            ('partobs', 'widthhold_partobs_exclusive'),
+            ('partcmp', 'widthhold_partcmp_exclusive'),
+            ('partread', 'widthhold_partread_exclusive'),
+            ('deblock', 'widthhold_deblock_exclusive'),
+            ('breakup', 'widthhold_breakup_exclusive'),
+            ('sweep', 'widthhold_sweep_exclusive'),
+            ('consume', 'widthhold_consume_exclusive')):
+        conflict = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-widthhold=1', 'emmc-block-3-widthhold')
+        assert not conflict[key], conflict
+        assert not conflict[
+            'emmc-block-3-widthhold_diagnostic_selected'], conflict
+        smuggled = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-widthhold=1', f'emmc-block-3-{modifier}')
+        assert not smuggled[
+            f'emmc-block-3-{modifier}_diagnostic_selected'], smuggled
+    width_widthhold_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-widthhold=1', 'emmc-block-3-widthhold')
+    assert not width_widthhold_conflict['widthhold_width_exclusive']
+    assert not width_widthhold_conflict[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    width4_with_widthhold = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-widthhold=1', 'emmc-block-3-width4')
+    assert not width4_with_widthhold[
+        'emmc-block-3-width4_diagnostic_selected']
+    good_widthpub = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1',
+        'emmc-block-3-widthpub')
+    assert all(good_widthpub.values()), good_widthpub
+    orphan_widthpub = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-widthpub=1')
+    assert not orphan_widthpub['no_widthpub_token_outside_block_mode']
+    duplicate_widthpub = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1 '
+        'gta4l-emmc-widthpub=1', 'emmc-block-3-widthpub')
+    assert not duplicate_widthpub['at_most_one_widthpub_token']
+    for value in ('0', '2', '-1', '', 'true'):
+        bad_widthpub_value = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-widthpub={value}',
+            'emmc-block-3-widthpub')
+        assert not bad_widthpub_value['widthpub_value_one'], \
+            bad_widthpub_value
+        assert not bad_widthpub_value[
+            'emmc-block-3-widthpub_diagnostic_selected'], \
+            bad_widthpub_value
+    widthpub_block_one = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-widthpub=1',
+        'emmc-block-3-widthpub')
+    assert not widthpub_block_one['widthpub_requires_block_three']
+    assert not widthpub_block_one[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    widthpub_duplicate_block = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-block=3 '
+        'gta4l-emmc-widthpub=1', 'emmc-block-3-widthpub')
+    assert not widthpub_duplicate_block['exactly_one_block_mode_token']
+    widthpub_with_probe = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-block=3 gta4l-emmc-widthpub=1',
+        'emmc-block-3-widthpub')
+    assert not widthpub_with_probe['no_probe_token_in_block_mode']
+    assert not widthpub_with_probe[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    missing_widthpub = checks(
+        'gta4l-emmc-block=3', 'emmc-block-3-widthpub')
+    assert not missing_widthpub[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    plain_widthpub_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1', 'emmc-block-3')
+    assert not plain_widthpub_expected['emmc-block-3_diagnostic_selected']
+    for modifier in ('partobs', 'partcmp', 'partread', 'deblock', 'breakup',
+                     'sweep', 'consume'):
+        key = f'widthpub_{modifier}_exclusive'
+        conflict = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-widthpub=1', 'emmc-block-3-widthpub')
+        assert not conflict[key], conflict
+        assert not conflict[
+            'emmc-block-3-widthpub_diagnostic_selected'], conflict
+        smuggled = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-widthpub=1', f'emmc-block-3-{modifier}')
+        assert not smuggled[
+            f'emmc-block-3-{modifier}_diagnostic_selected'], smuggled
+    widthpub_width_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-widthpub=1', 'emmc-block-3-widthpub')
+    assert not widthpub_width_conflict['widthpub_width_exclusive']
+    assert not widthpub_width_conflict[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    width4_with_widthpub = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-widthpub=1', 'emmc-block-3-width4')
+    assert not width4_with_widthpub[
+        'emmc-block-3-width4_diagnostic_selected']
+    widthpub_widthhold_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-widthpub=1', 'emmc-block-3-widthpub')
+    assert not widthpub_widthhold_conflict[
+        'widthpub_widthhold_exclusive']
+    assert not widthpub_widthhold_conflict[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    widthhold_with_widthpub = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-widthpub=1', 'emmc-block-3-widthhold')
+    assert not widthhold_with_widthpub[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    good_speed = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-speed=1', 'emmc-block-3-speed')
+    assert all(good_speed.values()), good_speed
+    orphan_speed = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-speed=1')
+    assert not orphan_speed['no_speed_token_outside_block_mode']
+    duplicate_speed = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-speed=1 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-speed')
+    assert not duplicate_speed['at_most_one_speed_token']
+    for value in ('0', '2', '-1', '', 'true'):
+        bad_speed_value = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-speed={value}',
+            'emmc-block-3-speed')
+        assert not bad_speed_value['speed_value_one'], bad_speed_value
+        assert not bad_speed_value[
+            'emmc-block-3-speed_diagnostic_selected'], bad_speed_value
+    speed_block_one = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-speed=1',
+        'emmc-block-3-speed')
+    assert not speed_block_one['speed_requires_block_three']
+    assert not speed_block_one['emmc-block-3-speed_diagnostic_selected']
+    speed_duplicate_block = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-block=3 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-speed')
+    assert not speed_duplicate_block['exactly_one_block_mode_token']
+    speed_with_probe = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-block=3 gta4l-emmc-speed=1',
+        'emmc-block-3-speed')
+    assert not speed_with_probe['no_probe_token_in_block_mode']
+    assert not speed_with_probe[
+        'emmc-block-3-speed_diagnostic_selected']
+    missing_speed = checks(
+        'gta4l-emmc-block=3', 'emmc-block-3-speed')
+    assert not missing_speed['emmc-block-3-speed_diagnostic_selected']
+    plain_speed_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-speed=1', 'emmc-block-3')
+    assert not plain_speed_expected['emmc-block-3_diagnostic_selected']
+    for modifier in ('partobs', 'partcmp', 'partread', 'deblock', 'breakup',
+                     'sweep', 'consume'):
+        key = f'speed_{modifier}_exclusive'
+        conflict = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-speed=1', 'emmc-block-3-speed')
+        assert not conflict[key], conflict
+        assert not conflict[
+            'emmc-block-3-speed_diagnostic_selected'], conflict
+        smuggled = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-speed=1', f'emmc-block-3-{modifier}')
+        assert not smuggled[
+            f'emmc-block-3-{modifier}_diagnostic_selected'], smuggled
+    speed_width_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-speed')
+    assert not speed_width_conflict['speed_width_exclusive']
+    speed_width_conflict_two = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-width4')
+    assert not speed_width_conflict_two[
+        'emmc-block-3-width4_diagnostic_selected']
+    speed_widthhold_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-speed')
+    assert not speed_widthhold_conflict['speed_widthhold_exclusive']
+    speed_widthpub_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-speed')
+    assert not speed_widthpub_conflict['speed_widthpub_exclusive']
+    widthpub_with_speed = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-widthpub')
+    assert not widthpub_with_speed[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    widthhold_with_speed = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-speed=1', 'emmc-block-3-widthhold')
+    assert not widthhold_with_speed[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    good_bulk = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert all(good_bulk.values()), good_bulk
+    orphan_bulk = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-bulk=1')
+    assert not orphan_bulk['no_bulk_token_outside_block_mode']
+    duplicate_bulk = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert not duplicate_bulk['at_most_one_bulk_token']
+    for value in ('0', '2', '-1', '', 'true'):
+        bad_bulk_value = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-bulk={value}',
+            'emmc-block-3-bulk')
+        assert not bad_bulk_value['bulk_value_one'], bad_bulk_value
+        assert not bad_bulk_value[
+            'emmc-block-3-bulk_diagnostic_selected'], bad_bulk_value
+    bulk_block_one = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-bulk=1',
+        'emmc-block-3-bulk')
+    assert not bulk_block_one['bulk_requires_block_three']
+    assert not bulk_block_one['emmc-block-3-bulk_diagnostic_selected']
+    bulk_duplicate_block = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-block=3 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert not bulk_duplicate_block['exactly_one_block_mode_token']
+    bulk_with_probe = checks(
+        'gta4l-emmc-probe=1 gta4l-emmc-block=3 gta4l-emmc-bulk=1',
+        'emmc-block-3-bulk')
+    assert not bulk_with_probe['no_probe_token_in_block_mode']
+    assert not bulk_with_probe[
+        'emmc-block-3-bulk_diagnostic_selected']
+    missing_bulk = checks(
+        'gta4l-emmc-block=3', 'emmc-block-3-bulk')
+    assert not missing_bulk['emmc-block-3-bulk_diagnostic_selected']
+    plain_bulk_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1', 'emmc-block-3')
+    assert not plain_bulk_expected['emmc-block-3_diagnostic_selected']
+    for modifier in ('partobs', 'partcmp', 'partread', 'deblock', 'breakup',
+                     'sweep', 'consume'):
+        key = f'bulk_{modifier}_exclusive'
+        conflict = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+        assert not conflict[key], conflict
+        assert not conflict[
+            'emmc-block-3-bulk_diagnostic_selected'], conflict
+        smuggled = checks(
+            f'gta4l-emmc-block=3 gta4l-emmc-{modifier}=1 '
+            'gta4l-emmc-bulk=1', f'emmc-block-3-{modifier}')
+        assert not smuggled[
+            f'emmc-block-3-{modifier}_diagnostic_selected'], smuggled
+    bulk_width_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert not bulk_width_conflict['bulk_width_exclusive']
+    assert not bulk_width_conflict[
+        'emmc-block-3-bulk_diagnostic_selected']
+    bulk_width_conflict_two = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-width=4 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-width4')
+    assert not bulk_width_conflict_two[
+        'emmc-block-3-width4_diagnostic_selected']
+    bulk_widthhold_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert not bulk_widthhold_conflict['bulk_widthhold_exclusive']
+    bulk_widthpub_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert not bulk_widthpub_conflict['bulk_widthpub_exclusive']
+    bulk_speed_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-speed=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-bulk')
+    assert not bulk_speed_conflict['bulk_speed_exclusive']
+    speed_with_bulk = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-speed=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-speed')
+    assert not speed_with_bulk[
+        'emmc-block-3-speed_diagnostic_selected']
+    widthpub_with_bulk = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthpub=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-widthpub')
+    assert not widthpub_with_bulk[
+        'emmc-block-3-widthpub_diagnostic_selected']
+    widthhold_with_bulk = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-widthhold=1 '
+        'gta4l-emmc-bulk=1', 'emmc-block-3-widthhold')
+    assert not widthhold_with_bulk[
+        'emmc-block-3-widthhold_diagnostic_selected']
+    good_live = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-live=1', 'emmc-block-3-live')
+    assert all(good_live.values()), good_live
+    live_missing_dma = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-live=1',
+        'emmc-block-3-live')
+    assert not live_missing_dma['live_requires_dma']
+    assert not live_missing_dma[
+        'emmc-block-3-live_diagnostic_selected']
+    live_missing_bulk = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-dma=1 gta4l-emmc-live=1',
+        'emmc-block-3-live')
+    assert not live_missing_bulk['live_requires_bulk']
+    assert not live_missing_bulk[
+        'emmc-block-3-live_diagnostic_selected']
+    live_block_one = checks(
+        'gta4l-emmc-block=1 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-live=1', 'emmc-block-3-live')
+    assert not live_block_one['live_requires_block_three']
+    assert not live_block_one[
+        'emmc-block-3-live_diagnostic_selected']
+    slow_without_live = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-slow=1')
+    assert not slow_without_live['slow_requires_live']
+    live_with_slow = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-live=1 gta4l-emmc-slow=1', 'emmc-block-3-live')
+    assert not live_with_slow['emmc-block-3-live_diagnostic_selected']
+    orphan_live = checks('gta4l-emmc-probe=1 gta4l-emmc-live=1')
+    assert not orphan_live['no_live_token_outside_block_mode']
+    duplicate_live = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-live=1 gta4l-emmc-live=1', 'emmc-block-3-live')
+    assert not duplicate_live['at_most_one_live_token']
+    live_speed_conflict = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-live=1 gta4l-emmc-speed=1', 'emmc-block-3-live')
+    assert not live_speed_conflict['live_speed_exclusive']
+    assert not live_speed_conflict[
+        'emmc-block-3-live_diagnostic_selected']
+    plain_live_expected = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-live=1', 'emmc-block-3')
+    assert not plain_live_expected['emmc-block-3_diagnostic_selected']
+    empty = checks('')
+    assert not empty['exactly_one_diagnostic_argument']
+    assert not empty['unixnu_toml_has_xnu_args']
+    print('PASS diagnostic family and block-token contract cases')
+
+
 def main():
-    tests = (test_explicit_kernel, test_default_kernel, test_missing_kernel)
+    tests = (test_explicit_kernel, test_default_kernel, test_missing_kernel,
+             test_emmc_probe_4, test_emmc_probe_5, test_emmc_probe_6,
+             test_emmc_probe_7, test_emmc_probe_8, test_emmc_probe_9,
+             test_emmc_probe_10, test_emmc_probe_11, test_emmc_probe_12,
+             test_emmc_probe_13, test_emmc_probe_14, test_emmc_probe_15,
+             test_emmc_probe_16, test_emmc_block_1, test_emmc_block_3,
+             test_emmc_block_1_partobs, test_emmc_block_3_partobs,
+             test_emmc_block_1_partcmp, test_emmc_block_3_partcmp,
+             test_emmc_block_1_partread, test_emmc_block_3_partread,
+             test_emmc_block_1_deblock, test_emmc_block_3_deblock,
+             test_emmc_block_1_breakup, test_emmc_block_3_breakup,
+             test_emmc_block_1_sweep, test_emmc_block_3_sweep,
+             test_emmc_block_3_consume, test_emmc_block_3_width4,
+             test_emmc_block_3_widthhold, test_emmc_block_3_widthpub,
+             test_emmc_block_3_speed, test_emmc_block_3_bulk,
+             test_emmc_block_3_windows, test_emmc_block_3_live,
+             test_partobs_rejects_early_panic_fixture,
+             test_partcmp_rejects_early_panic_fixture,
+             test_partread_rejects_early_panic_fixture,
+             test_deblock_rejects_early_panic_fixture,
+             test_breakup_rejects_early_panic_fixture,
+             test_sweep_rejects_early_panic_fixture,
+             test_consume_rejects_early_panic_fixture,
+             test_width4_rejects_early_panic_fixture,
+             test_widthhold_rejects_early_panic_fixture,
+             test_widthpub_rejects_early_panic_fixture,
+             test_speed_rejects_early_panic_fixture,
+             test_bulk_rejects_early_panic_fixture,
+             test_live_rejects_early_panic_fixture,
+             test_partobs_rejects_missing_fixture_manifest,
+             test_fixture_manifest_hold_mismatch,
+             test_diagnostic_contract)
     for test in tests:
         with tempfile.TemporaryDirectory(prefix='gta4l-payload-test-') as tmp:
             test(Path(tmp))

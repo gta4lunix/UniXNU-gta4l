@@ -23,13 +23,107 @@ TOML_MEMBER = '::/EFI/UniXNU/unixnu.toml'
 RAMDISK_MEMBER = PAYLOAD_DIR + '/scratch-data.img'
 TRUST_MEMBER = PAYLOAD_DIR + '/kernel.macho.trustcache'
 ADDON_MEMBER = PAYLOAD_DIR + '/kernel.macho.gpuaddon'
-DIAGNOSTICS = ('gta4l-sdhci-host-init=1',
-               'gta4l-sdhci-audit=1',
-               'gta4l-sdhci-snapshot=1')
 DIAGNOSTIC_NAMES = {
     'host-init': 'gta4l-sdhci-host-init=1',
     'audit': 'gta4l-sdhci-audit=1',
     'snapshot': 'gta4l-sdhci-snapshot=1',
+    'emmc-probe-1': 'gta4l-emmc-probe=1',
+    'emmc-probe-2': 'gta4l-emmc-probe=2',
+    'emmc-probe-3': 'gta4l-emmc-probe=3',
+    'emmc-probe-4': 'gta4l-emmc-probe=4',
+    'emmc-probe-5': 'gta4l-emmc-probe=5',
+    'emmc-probe-6': 'gta4l-emmc-probe=6',
+    'emmc-probe-7': 'gta4l-emmc-probe=7',
+    'emmc-probe-8': 'gta4l-emmc-probe=8',
+    'emmc-probe-9': 'gta4l-emmc-probe=9',
+    'emmc-probe-10': 'gta4l-emmc-probe=10',
+    'emmc-probe-11': 'gta4l-emmc-probe=11',
+    'emmc-probe-12': 'gta4l-emmc-probe=12',
+    'emmc-probe-13': 'gta4l-emmc-probe=13',
+    'emmc-probe-14': 'gta4l-emmc-probe=14',
+    'emmc-probe-15': 'gta4l-emmc-probe=15',
+    'emmc-probe-16': 'gta4l-emmc-probe=16',
+    'emmc-probe-17': 'gta4l-emmc-probe=17',
+    'emmc-block-1': 'gta4l-emmc-block=1',
+    'emmc-block-3': 'gta4l-emmc-block=3',
+}
+
+# Derived from the name map so a new stage cannot be added to one list and
+# forgotten in the other.
+DIAGNOSTICS = tuple(DIAGNOSTIC_NAMES.values())
+PROBE_PREFIX = 'gta4l-emmc-probe='
+BLOCK_PREFIX = 'gta4l-emmc-block='
+PARTOBS_PREFIX = 'gta4l-emmc-partobs='
+PARTCMP_PREFIX = 'gta4l-emmc-partcmp='
+PARTREAD_PREFIX = 'gta4l-emmc-partread='
+DEBLOCK_PREFIX = 'gta4l-emmc-deblock='
+BREAKUP_PREFIX = 'gta4l-emmc-breakup='
+SWEEP_PREFIX = 'gta4l-emmc-sweep='
+CONSUME_PREFIX = 'gta4l-emmc-consume='
+WIDTH_PREFIX = 'gta4l-emmc-width='
+WIDTHHOLD_PREFIX = 'gta4l-emmc-widthhold='
+WIDTHPUB_PREFIX = 'gta4l-emmc-widthpub='
+SPEED_PREFIX = 'gta4l-emmc-speed='
+BULK_PREFIX = 'gta4l-emmc-bulk='
+DMA_PREFIX = 'gta4l-emmc-dma='
+LIVE_PREFIX = 'gta4l-emmc-live='
+WINDOWS_PREFIX = 'gta4l-emmc-windows='
+SLOW_PREFIX = 'gta4l-emmc-slow='
+BLOCK_DIAGNOSTICS = ('emmc-block-1', 'emmc-block-3')
+# The partobs, partcmp, partread, deblock, breakup, sweep, consume, width,
+# widthhold, widthpub, speed and bulk tokens are modifiers, not independent
+# diagnostics:
+# each is only valid with exactly one block token. Each personality names the
+# block personality it extends.
+PARTOBS_DIAGNOSTICS = {
+    'emmc-block-1-partobs': 'emmc-block-1',
+    'emmc-block-3-partobs': 'emmc-block-3',
+}
+PARTCMP_DIAGNOSTICS = {
+    'emmc-block-1-partcmp': 'emmc-block-1',
+    'emmc-block-3-partcmp': 'emmc-block-3',
+}
+PARTREAD_DIAGNOSTICS = {
+    'emmc-block-1-partread': 'emmc-block-1',
+    'emmc-block-3-partread': 'emmc-block-3',
+}
+DEBLOCK_DIAGNOSTICS = {
+    'emmc-block-1-deblock': 'emmc-block-1',
+    'emmc-block-3-deblock': 'emmc-block-3',
+}
+BREAKUP_DIAGNOSTICS = {
+    'emmc-block-1-breakup': 'emmc-block-1',
+    'emmc-block-3-breakup': 'emmc-block-3',
+}
+SWEEP_DIAGNOSTICS = {
+    'emmc-block-1-sweep': 'emmc-block-1',
+    'emmc-block-3-sweep': 'emmc-block-3',
+}
+CONSUME_DIAGNOSTICS = {
+    'emmc-block-3-consume': 'emmc-block-3',
+}
+WIDTH_DIAGNOSTICS = {
+    'emmc-block-3-width4': 'emmc-block-3',
+}
+WIDTHHOLD_DIAGNOSTICS = {
+    'emmc-block-3-widthhold': 'emmc-block-3',
+}
+WIDTHPUB_DIAGNOSTICS = {
+    'emmc-block-3-widthpub': 'emmc-block-3',
+}
+SPEED_DIAGNOSTICS = {
+    'emmc-block-3-speed': 'emmc-block-3',
+}
+BULK_DIAGNOSTICS = {
+    'emmc-block-3-bulk': 'emmc-block-3',
+    'emmc-block-3-bulk-dma': 'emmc-block-3',
+}
+LIVE_DIAGNOSTICS = {
+    'emmc-block-3-live': 'emmc-block-3',
+}
+WINDOWS_DIAGNOSTICS = {
+    'emmc-block-3-windows': 'emmc-block-3',
+    'emmc-block-3-verify': 'emmc-block-3',
 }
 
 
@@ -135,6 +229,494 @@ def xnu_args(path):
     raise ValueError('unixnu.toml has no xnu entry')
 
 
+def diagnostic_contract(args, expected='any'):
+    """Return the ordered diagnostic checks for an xnu argument string."""
+    tokens = args.split()
+    found = [item for item in DIAGNOSTICS if item in tokens]
+    block_tokens = [item for item in tokens if item.startswith(BLOCK_PREFIX)]
+    probe_tokens = [item for item in tokens if item.startswith(PROBE_PREFIX)]
+    partobs_tokens = [item for item in tokens
+                      if item.startswith(PARTOBS_PREFIX)]
+    partcmp_tokens = [item for item in tokens
+                      if item.startswith(PARTCMP_PREFIX)]
+    partread_tokens = [item for item in tokens
+                       if item.startswith(PARTREAD_PREFIX)]
+    deblock_tokens = [item for item in tokens
+                      if item.startswith(DEBLOCK_PREFIX)]
+    breakup_tokens = [item for item in tokens
+                      if item.startswith(BREAKUP_PREFIX)]
+    sweep_tokens = [item for item in tokens
+                    if item.startswith(SWEEP_PREFIX)]
+    consume_tokens = [item for item in tokens
+                      if item.startswith(CONSUME_PREFIX)]
+    width_tokens = [item for item in tokens
+                    if item.startswith(WIDTH_PREFIX)]
+    widthhold_tokens = [item for item in tokens
+                        if item.startswith(WIDTHHOLD_PREFIX)]
+    widthpub_tokens = [item for item in tokens
+                       if item.startswith(WIDTHPUB_PREFIX)]
+    speed_tokens = [item for item in tokens
+                    if item.startswith(SPEED_PREFIX)]
+    bulk_tokens = [item for item in tokens
+                   if item.startswith(BULK_PREFIX)]
+    dma_tokens = [item for item in tokens
+                  if item.startswith(DMA_PREFIX)]
+    live_tokens = [item for item in tokens
+                   if item.startswith(LIVE_PREFIX)]
+    windows_tokens = [item for item in tokens
+                      if item.startswith(WINDOWS_PREFIX)]
+    slow_tokens = [item for item in tokens
+                   if item.startswith(SLOW_PREFIX)]
+    checks = {'exactly_one_diagnostic_argument': len(found) == 1}
+    block_selected = [DIAGNOSTIC_NAMES[name] for name in BLOCK_DIAGNOSTICS
+                      if DIAGNOSTIC_NAMES[name] in found]
+    if block_selected:
+        checks['exactly_one_block_mode_token'] = (
+            block_tokens == block_selected)
+        checks['no_probe_token_in_block_mode'] = not probe_tokens
+        checks['at_most_one_partobs_token'] = len(partobs_tokens) <= 1
+        checks['partobs_value_one'] = all(
+            item == PARTOBS_PREFIX + '1' for item in partobs_tokens)
+        checks['at_most_one_partcmp_token'] = len(partcmp_tokens) <= 1
+        checks['partcmp_value_one'] = all(
+            item == PARTCMP_PREFIX + '1' for item in partcmp_tokens)
+        checks['at_most_one_partread_token'] = len(partread_tokens) <= 1
+        checks['partread_value_one'] = all(
+            item == PARTREAD_PREFIX + '1' for item in partread_tokens)
+        checks['at_most_one_deblock_token'] = len(deblock_tokens) <= 1
+        checks['deblock_value_one'] = all(
+            item == DEBLOCK_PREFIX + '1' for item in deblock_tokens)
+        checks['partobs_partcmp_exclusive'] = not (
+            partobs_tokens and partcmp_tokens)
+        checks['partread_partobs_exclusive'] = not (
+            partread_tokens and partobs_tokens)
+        checks['partread_partcmp_exclusive'] = not (
+            partread_tokens and partcmp_tokens)
+        checks['deblock_partobs_exclusive'] = not (
+            deblock_tokens and partobs_tokens)
+        checks['deblock_partcmp_exclusive'] = not (
+            deblock_tokens and partcmp_tokens)
+        checks['deblock_partread_exclusive'] = not (
+            deblock_tokens and partread_tokens)
+        checks['at_most_one_breakup_token'] = len(breakup_tokens) <= 1
+        checks['breakup_value_one'] = all(
+            item == BREAKUP_PREFIX + '1' for item in breakup_tokens)
+        checks['breakup_partobs_exclusive'] = not (
+            breakup_tokens and partobs_tokens)
+        checks['breakup_partcmp_exclusive'] = not (
+            breakup_tokens and partcmp_tokens)
+        checks['breakup_partread_exclusive'] = not (
+            breakup_tokens and partread_tokens)
+        checks['breakup_deblock_exclusive'] = not (
+            breakup_tokens and deblock_tokens)
+        checks['at_most_one_sweep_token'] = len(sweep_tokens) <= 1
+        checks['sweep_value_one'] = all(
+            item == SWEEP_PREFIX + '1' for item in sweep_tokens)
+        checks['sweep_partobs_exclusive'] = not (
+            sweep_tokens and partobs_tokens)
+        checks['sweep_partcmp_exclusive'] = not (
+            sweep_tokens and partcmp_tokens)
+        checks['sweep_partread_exclusive'] = not (
+            sweep_tokens and partread_tokens)
+        checks['sweep_deblock_exclusive'] = not (
+            sweep_tokens and deblock_tokens)
+        checks['sweep_breakup_exclusive'] = not (
+            sweep_tokens and breakup_tokens)
+        checks['at_most_one_consume_token'] = len(consume_tokens) <= 1
+        checks['consume_value_one'] = all(
+            item == CONSUME_PREFIX + '1' for item in consume_tokens)
+        checks['consume_requires_block_three'] = (
+            not consume_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['consume_partobs_exclusive'] = not (
+            consume_tokens and partobs_tokens)
+        checks['consume_partcmp_exclusive'] = not (
+            consume_tokens and partcmp_tokens)
+        checks['consume_partread_exclusive'] = not (
+            consume_tokens and partread_tokens)
+        checks['consume_deblock_exclusive'] = not (
+            consume_tokens and deblock_tokens)
+        checks['consume_breakup_exclusive'] = not (
+            consume_tokens and breakup_tokens)
+        checks['consume_sweep_exclusive'] = not (
+            consume_tokens and sweep_tokens)
+        checks['at_most_one_width_token'] = len(width_tokens) <= 1
+        checks['width_value_four'] = all(
+            item == WIDTH_PREFIX + '4' for item in width_tokens)
+        checks['width_requires_block_three'] = (
+            not width_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['width_partobs_exclusive'] = not (
+            width_tokens and partobs_tokens)
+        checks['width_partcmp_exclusive'] = not (
+            width_tokens and partcmp_tokens)
+        checks['width_partread_exclusive'] = not (
+            width_tokens and partread_tokens)
+        checks['width_deblock_exclusive'] = not (
+            width_tokens and deblock_tokens)
+        checks['width_breakup_exclusive'] = not (
+            width_tokens and breakup_tokens)
+        checks['width_sweep_exclusive'] = not (
+            width_tokens and sweep_tokens)
+        checks['width_consume_exclusive'] = not (
+            width_tokens and consume_tokens)
+        checks['at_most_one_widthhold_token'] = len(widthhold_tokens) <= 1
+        checks['widthhold_value_one'] = all(
+            item == WIDTHHOLD_PREFIX + '1' for item in widthhold_tokens)
+        checks['widthhold_requires_block_three'] = (
+            not widthhold_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['widthhold_partobs_exclusive'] = not (
+            widthhold_tokens and partobs_tokens)
+        checks['widthhold_partcmp_exclusive'] = not (
+            widthhold_tokens and partcmp_tokens)
+        checks['widthhold_partread_exclusive'] = not (
+            widthhold_tokens and partread_tokens)
+        checks['widthhold_deblock_exclusive'] = not (
+            widthhold_tokens and deblock_tokens)
+        checks['widthhold_breakup_exclusive'] = not (
+            widthhold_tokens and breakup_tokens)
+        checks['widthhold_sweep_exclusive'] = not (
+            widthhold_tokens and sweep_tokens)
+        checks['widthhold_consume_exclusive'] = not (
+            widthhold_tokens and consume_tokens)
+        checks['widthhold_width_exclusive'] = not (
+            widthhold_tokens and width_tokens)
+        checks['at_most_one_widthpub_token'] = len(widthpub_tokens) <= 1
+        checks['widthpub_value_one'] = all(
+            item == WIDTHPUB_PREFIX + '1' for item in widthpub_tokens)
+        checks['widthpub_requires_block_three'] = (
+            not widthpub_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['widthpub_partobs_exclusive'] = not (
+            widthpub_tokens and partobs_tokens)
+        checks['widthpub_partcmp_exclusive'] = not (
+            widthpub_tokens and partcmp_tokens)
+        checks['widthpub_partread_exclusive'] = not (
+            widthpub_tokens and partread_tokens)
+        checks['widthpub_deblock_exclusive'] = not (
+            widthpub_tokens and deblock_tokens)
+        checks['widthpub_breakup_exclusive'] = not (
+            widthpub_tokens and breakup_tokens)
+        checks['widthpub_sweep_exclusive'] = not (
+            widthpub_tokens and sweep_tokens)
+        checks['widthpub_consume_exclusive'] = not (
+            widthpub_tokens and consume_tokens)
+        checks['widthpub_width_exclusive'] = not (
+            widthpub_tokens and width_tokens)
+        checks['widthpub_widthhold_exclusive'] = not (
+            widthpub_tokens and widthhold_tokens)
+        checks['at_most_one_speed_token'] = len(speed_tokens) <= 1
+        checks['speed_value_one'] = all(
+            item == SPEED_PREFIX + '1' for item in speed_tokens)
+        checks['speed_requires_block_three'] = (
+            not speed_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['speed_partobs_exclusive'] = not (
+            speed_tokens and partobs_tokens)
+        checks['speed_partcmp_exclusive'] = not (
+            speed_tokens and partcmp_tokens)
+        checks['speed_partread_exclusive'] = not (
+            speed_tokens and partread_tokens)
+        checks['speed_deblock_exclusive'] = not (
+            speed_tokens and deblock_tokens)
+        checks['speed_breakup_exclusive'] = not (
+            speed_tokens and breakup_tokens)
+        checks['speed_sweep_exclusive'] = not (
+            speed_tokens and sweep_tokens)
+        checks['speed_consume_exclusive'] = not (
+            speed_tokens and consume_tokens)
+        checks['speed_width_exclusive'] = not (
+            speed_tokens and width_tokens)
+        checks['speed_widthhold_exclusive'] = not (
+            speed_tokens and widthhold_tokens)
+        checks['speed_widthpub_exclusive'] = not (
+            speed_tokens and widthpub_tokens)
+        checks['at_most_one_bulk_token'] = len(bulk_tokens) <= 1
+        checks['bulk_value_one'] = all(
+            item == BULK_PREFIX + '1' for item in bulk_tokens)
+        checks['bulk_requires_block_three'] = (
+            not bulk_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['bulk_partobs_exclusive'] = not (
+            bulk_tokens and partobs_tokens)
+        checks['bulk_partcmp_exclusive'] = not (
+            bulk_tokens and partcmp_tokens)
+        checks['bulk_partread_exclusive'] = not (
+            bulk_tokens and partread_tokens)
+        checks['bulk_deblock_exclusive'] = not (
+            bulk_tokens and deblock_tokens)
+        checks['bulk_breakup_exclusive'] = not (
+            bulk_tokens and breakup_tokens)
+        checks['bulk_sweep_exclusive'] = not (
+            bulk_tokens and sweep_tokens)
+        checks['bulk_consume_exclusive'] = not (
+            bulk_tokens and consume_tokens)
+        checks['bulk_width_exclusive'] = not (
+            bulk_tokens and width_tokens)
+        checks['bulk_widthhold_exclusive'] = not (
+            bulk_tokens and widthhold_tokens)
+        checks['bulk_widthpub_exclusive'] = not (
+            bulk_tokens and widthpub_tokens)
+        checks['bulk_speed_exclusive'] = not (
+            bulk_tokens and speed_tokens)
+        checks['at_most_one_dma_token'] = len(dma_tokens) <= 1
+        checks['dma_value_one'] = all(
+            item == DMA_PREFIX + '1' for item in dma_tokens)
+        checks['dma_requires_block_three'] = (
+            not dma_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['dma_requires_bulk_or_windows'] = (
+            not dma_tokens or bulk_tokens == [BULK_PREFIX + '1'] or
+            windows_tokens == [WINDOWS_PREFIX + '1'])
+        checks['at_most_one_windows_token'] = len(windows_tokens) <= 1
+        checks['windows_value_one'] = all(
+            item == WINDOWS_PREFIX + '1' for item in windows_tokens)
+        checks['windows_requires_block_three'] = (
+            not windows_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['windows_no_other_modifier'] = (
+            not windows_tokens or not (
+                partobs_tokens or partcmp_tokens or partread_tokens or
+                deblock_tokens or breakup_tokens or sweep_tokens or
+                consume_tokens or width_tokens or widthhold_tokens or
+                widthpub_tokens or speed_tokens or bulk_tokens or
+                live_tokens or slow_tokens))
+        checks['at_most_one_live_token'] = len(live_tokens) <= 1
+        checks['live_value_one'] = all(
+            item == LIVE_PREFIX + '1' for item in live_tokens)
+        checks['live_requires_block_three'] = (
+            not live_tokens or block_tokens == [BLOCK_PREFIX + '3'])
+        checks['live_requires_bulk'] = (
+            not live_tokens or bulk_tokens == [BULK_PREFIX + '1'])
+        checks['live_requires_dma'] = (
+            not live_tokens or dma_tokens == [DMA_PREFIX + '1'])
+        checks['live_partobs_exclusive'] = not (
+            live_tokens and partobs_tokens)
+        checks['live_partcmp_exclusive'] = not (
+            live_tokens and partcmp_tokens)
+        checks['live_partread_exclusive'] = not (
+            live_tokens and partread_tokens)
+        checks['live_deblock_exclusive'] = not (
+            live_tokens and deblock_tokens)
+        checks['live_breakup_exclusive'] = not (
+            live_tokens and breakup_tokens)
+        checks['live_sweep_exclusive'] = not (
+            live_tokens and sweep_tokens)
+        checks['live_consume_exclusive'] = not (
+            live_tokens and consume_tokens)
+        checks['live_width_exclusive'] = not (
+            live_tokens and width_tokens)
+        checks['live_widthhold_exclusive'] = not (
+            live_tokens and widthhold_tokens)
+        checks['live_widthpub_exclusive'] = not (
+            live_tokens and widthpub_tokens)
+        checks['live_speed_exclusive'] = not (
+            live_tokens and speed_tokens)
+        checks['at_most_one_slow_token'] = len(slow_tokens) <= 1
+        checks['slow_value_one'] = all(
+            item == SLOW_PREFIX + '1' for item in slow_tokens)
+        checks['slow_requires_live'] = (
+            not slow_tokens or live_tokens == [LIVE_PREFIX + '1'])
+        checks['slow_speed_exclusive'] = not (
+            slow_tokens and speed_tokens)
+    else:
+        checks['no_block_token_outside_block_mode'] = not block_tokens
+        checks['no_partobs_token_outside_block_mode'] = not partobs_tokens
+        checks['no_partcmp_token_outside_block_mode'] = not partcmp_tokens
+        checks['no_partread_token_outside_block_mode'] = not partread_tokens
+        checks['no_deblock_token_outside_block_mode'] = not deblock_tokens
+        checks['no_breakup_token_outside_block_mode'] = not breakup_tokens
+        checks['no_sweep_token_outside_block_mode'] = not sweep_tokens
+        checks['no_consume_token_outside_block_mode'] = not consume_tokens
+        checks['no_width_token_outside_block_mode'] = not width_tokens
+        checks['no_widthhold_token_outside_block_mode'] = (
+            not widthhold_tokens)
+        checks['no_widthpub_token_outside_block_mode'] = (
+            not widthpub_tokens)
+        checks['no_speed_token_outside_block_mode'] = not speed_tokens
+        checks['no_bulk_token_outside_block_mode'] = not bulk_tokens
+        checks['no_dma_token_outside_block_mode'] = not dma_tokens
+        checks['no_live_token_outside_block_mode'] = not live_tokens
+        checks['no_slow_token_outside_block_mode'] = not slow_tokens
+    if expected != 'any':
+        if expected in PARTOBS_DIAGNOSTICS:
+            base = PARTOBS_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                partobs_tokens == [PARTOBS_PREFIX + '1'] and
+                not partcmp_tokens and not partread_tokens and
+                not deblock_tokens and not breakup_tokens and
+                not sweep_tokens and not consume_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in PARTCMP_DIAGNOSTICS:
+            base = PARTCMP_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                partcmp_tokens == [PARTCMP_PREFIX + '1'] and
+                not partobs_tokens and not partread_tokens and
+                not deblock_tokens and not breakup_tokens and
+                not sweep_tokens and not consume_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in PARTREAD_DIAGNOSTICS:
+            base = PARTREAD_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                partread_tokens == [PARTREAD_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not deblock_tokens and not breakup_tokens and
+                not sweep_tokens and not consume_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in DEBLOCK_DIAGNOSTICS:
+            base = DEBLOCK_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                deblock_tokens == [DEBLOCK_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not breakup_tokens and
+                not sweep_tokens and not consume_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in BREAKUP_DIAGNOSTICS:
+            base = BREAKUP_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                breakup_tokens == [BREAKUP_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not sweep_tokens and not consume_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in SWEEP_DIAGNOSTICS:
+            base = SWEEP_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                sweep_tokens == [SWEEP_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not consume_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in CONSUME_DIAGNOSTICS:
+            base = CONSUME_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                consume_tokens == [CONSUME_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not width_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in WIDTH_DIAGNOSTICS:
+            base = WIDTH_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                width_tokens == [WIDTH_PREFIX + '4'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not widthhold_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in WIDTHHOLD_DIAGNOSTICS:
+            base = WIDTHHOLD_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                widthhold_tokens == [WIDTHHOLD_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthpub_tokens and
+                not speed_tokens)
+        elif expected in WIDTHPUB_DIAGNOSTICS:
+            base = WIDTHPUB_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                widthpub_tokens == [WIDTHPUB_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthhold_tokens and not speed_tokens)
+        elif expected in SPEED_DIAGNOSTICS:
+            base = SPEED_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                speed_tokens == [SPEED_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthhold_tokens and not widthpub_tokens)
+        elif expected in BULK_DIAGNOSTICS:
+            base = BULK_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                bulk_tokens == [BULK_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthhold_tokens and not widthpub_tokens and
+                not speed_tokens)
+        elif expected in LIVE_DIAGNOSTICS:
+            base = LIVE_DIAGNOSTICS[expected]
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                bulk_tokens == [BULK_PREFIX + '1'] and
+                dma_tokens == [DMA_PREFIX + '1'] and
+                live_tokens == [LIVE_PREFIX + '1'] and
+                not slow_tokens and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthhold_tokens and not widthpub_tokens and
+                not speed_tokens)
+        elif expected in WINDOWS_DIAGNOSTICS:
+            base = WINDOWS_DIAGNOSTICS[expected]
+            expected_dma = ([DMA_PREFIX + '1'] if
+                            expected == 'emmc-block-3-verify' else [])
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[base]] and
+                windows_tokens == [WINDOWS_PREFIX + '1'] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthhold_tokens and not widthpub_tokens and
+                not speed_tokens and not bulk_tokens and
+                dma_tokens == expected_dma and
+                not live_tokens and not slow_tokens)
+        else:
+            checks[f'{expected}_diagnostic_selected'] = (
+                found == [DIAGNOSTIC_NAMES[expected]] and
+                not partobs_tokens and not partcmp_tokens and
+                not partread_tokens and not deblock_tokens and
+                not breakup_tokens and not sweep_tokens and
+                not consume_tokens and not width_tokens and
+                not widthhold_tokens and not widthpub_tokens and
+                not speed_tokens)
+        if bulk_tokens and expected not in (*BULK_DIAGNOSTICS,
+                                           *LIVE_DIAGNOSTICS):
+            checks[f'{expected}_diagnostic_selected'] = False
+        if dma_tokens and expected not in (*BULK_DIAGNOSTICS,
+                                           *LIVE_DIAGNOSTICS,
+                                           'emmc-block-3-verify'):
+            checks[f'{expected}_diagnostic_selected'] = False
+        if live_tokens and expected not in LIVE_DIAGNOSTICS:
+            checks[f'{expected}_diagnostic_selected'] = False
+        if windows_tokens and expected not in WINDOWS_DIAGNOSTICS:
+            checks[f'{expected}_diagnostic_selected'] = False
+        if slow_tokens:
+            checks[f'{expected}_diagnostic_selected'] = False
+    checks['unixnu_toml_has_xnu_args'] = bool(args)
+    return checks
+
+
 def check(image, expected='any'):
     image = Path(image)
     result = {'payload': str(image), 'expected_diagnostic': expected,
@@ -177,12 +759,8 @@ def check(image, expected='any'):
                     addon_present == ('GpuAddon' in memory_map))
 
             args = xnu_args(toml_path)
-            found = [item for item in DIAGNOSTICS if item in args]
-            require('exactly_one_diagnostic_argument', len(found) == 1)
-            if expected != 'any':
-                require(f'{expected}_diagnostic_selected',
-                        found == [DIAGNOSTIC_NAMES[expected]])
-            require('unixnu_toml_has_xnu_args', bool(args))
+            for name, ok in diagnostic_contract(args, expected).items():
+                require(name, ok)
         result['pass'] = True
     except (ValueError, OSError) as error:
         result['pass'] = False
@@ -194,7 +772,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--payload')
     parser.add_argument('--expect-diagnostic',
-                        choices=('any', 'host-init', 'audit', 'snapshot'),
+                        choices=('any', *DIAGNOSTIC_NAMES,
+                                 *PARTOBS_DIAGNOSTICS,
+                                 *PARTCMP_DIAGNOSTICS,
+                                 *PARTREAD_DIAGNOSTICS,
+                                 *DEBLOCK_DIAGNOSTICS,
+                                 *BREAKUP_DIAGNOSTICS,
+                                 *SWEEP_DIAGNOSTICS,
+                                 *CONSUME_DIAGNOSTICS,
+                                 *WIDTH_DIAGNOSTICS,
+                                 *WIDTHHOLD_DIAGNOSTICS,
+                                 *WIDTHPUB_DIAGNOSTICS,
+                                 *SPEED_DIAGNOSTICS,
+                                 *BULK_DIAGNOSTICS,
+                                 *LIVE_DIAGNOSTICS,
+                                 *WINDOWS_DIAGNOSTICS),
                         default='any',
                         help='require this board diagnostic argument')
     parser.add_argument('--json', action='store_true')

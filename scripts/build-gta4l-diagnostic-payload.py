@@ -6,7 +6,21 @@ The tracked board.toml is never modified. A temporary copy is made, its
 [payload.adt] packed_data_ramdisk is forced to false because the RAM-root
 fixture is a raw N4KROOT image. The payload is built by the normal UniXNU
 payload step and checked by scripts/check-gta4l-payload.py before it is copied
-to --output or a manifest is written.
+to --output or a manifest is written. The partobs, partcmp, partread, deblock,
+breakup, sweep, consume and width personalities additionally require
+--data-ramdisk-manifest naming the fs-timer-hold fixture, so the old
+early-success-panic RAM-root fixture cannot be repackaged for the observation.
+The widthhold personality maps to gta4l-emmc-block=3 gta4l-emmc-widthhold=1
+and the widthpub personality maps to gta4l-emmc-block=3
+gta4l-emmc-widthpub=1. The speed personality maps to gta4l-emmc-block=3
+gta4l-emmc-speed=1 and also requires the fs-timer-hold fixture. The bulk
+personality maps to gta4l-emmc-block=3 gta4l-emmc-bulk=1 and also requires
+the fs-timer-hold fixture. The live personality maps to
+gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 gta4l-emmc-live=1
+and also requires the fs-timer-hold fixture; force-slow is a host-only
+token and is not a payload personality. The windows personality maps to
+gta4l-emmc-block=3 gta4l-emmc-windows=1 and also requires the
+fs-timer-hold fixture.
 """
 import argparse
 import datetime
@@ -26,7 +40,74 @@ DIAGNOSTICS = {
     'host-init': 'gta4l-sdhci-host-init=1',
     'audit': 'gta4l-sdhci-audit=1',
     'snapshot': 'gta4l-sdhci-snapshot=1',
+    'emmc-probe-1': 'gta4l-emmc-probe=1',
+    'emmc-probe-2': 'gta4l-emmc-probe=2',
+    'emmc-probe-3': 'gta4l-emmc-probe=3',
+    'emmc-probe-4': 'gta4l-emmc-probe=4',
+    'emmc-probe-5': 'gta4l-emmc-probe=5',
+    'emmc-probe-6': 'gta4l-emmc-probe=6',
+    'emmc-probe-7': 'gta4l-emmc-probe=7',
+    'emmc-probe-8': 'gta4l-emmc-probe=8',
+    'emmc-probe-9': 'gta4l-emmc-probe=9',
+    'emmc-probe-10': 'gta4l-emmc-probe=10',
+    'emmc-probe-11': 'gta4l-emmc-probe=11',
+    'emmc-probe-12': 'gta4l-emmc-probe=12',
+    'emmc-probe-13': 'gta4l-emmc-probe=13',
+    'emmc-probe-14': 'gta4l-emmc-probe=14',
+    'emmc-probe-15': 'gta4l-emmc-probe=15',
+    'emmc-probe-16': 'gta4l-emmc-probe=16',
+    'emmc-probe-17': 'gta4l-emmc-probe=17',
+    'emmc-block-1': 'gta4l-emmc-block=1',
+    'emmc-block-3': 'gta4l-emmc-block=3',
+    'emmc-block-1-partobs': 'gta4l-emmc-block=1 gta4l-emmc-partobs=1',
+    'emmc-block-3-partobs': 'gta4l-emmc-block=3 gta4l-emmc-partobs=1',
+    'emmc-block-1-partcmp': 'gta4l-emmc-block=1 gta4l-emmc-partcmp=1',
+    'emmc-block-3-partcmp': 'gta4l-emmc-block=3 gta4l-emmc-partcmp=1',
+    'emmc-block-1-partread': 'gta4l-emmc-block=1 gta4l-emmc-partread=1',
+    'emmc-block-3-partread': 'gta4l-emmc-block=3 gta4l-emmc-partread=1',
+    'emmc-block-1-deblock': 'gta4l-emmc-block=1 gta4l-emmc-deblock=1',
+    'emmc-block-3-deblock': 'gta4l-emmc-block=3 gta4l-emmc-deblock=1',
+    'emmc-block-1-breakup': 'gta4l-emmc-block=1 gta4l-emmc-breakup=1',
+    'emmc-block-3-breakup': 'gta4l-emmc-block=3 gta4l-emmc-breakup=1',
+    'emmc-block-1-sweep': 'gta4l-emmc-block=1 gta4l-emmc-sweep=1',
+    'emmc-block-3-sweep': 'gta4l-emmc-block=3 gta4l-emmc-sweep=1',
+    'emmc-block-3-consume': 'gta4l-emmc-block=3 gta4l-emmc-consume=1',
+    'emmc-block-3-width4': 'gta4l-emmc-block=3 gta4l-emmc-width=4',
+    'emmc-block-3-widthhold': 'gta4l-emmc-block=3 gta4l-emmc-widthhold=1',
+    'emmc-block-3-widthpub': 'gta4l-emmc-block=3 gta4l-emmc-widthpub=1',
+    'emmc-block-3-speed': 'gta4l-emmc-block=3 gta4l-emmc-speed=1',
+    'emmc-block-3-bulk': 'gta4l-emmc-block=3 gta4l-emmc-bulk=1',
+    'emmc-block-3-bulk-dma': 'gta4l-emmc-block=3 gta4l-emmc-bulk=1 '
+                             'gta4l-emmc-dma=1',
+    'emmc-block-3-live': 'gta4l-emmc-block=3 gta4l-emmc-bulk=1 '
+                         'gta4l-emmc-dma=1 gta4l-emmc-live=1',
+    'emmc-block-3-windows': 'gta4l-emmc-block=3 gta4l-emmc-windows=1',
+    'emmc-block-3-verify': 'gta4l-emmc-block=3 gta4l-emmc-windows=1 '
+                           'gta4l-emmc-verify=1 gta4l-emmc-dma=1',
 }
+PARTOBS_DIAGNOSTICS = ('emmc-block-1-partobs', 'emmc-block-3-partobs')
+PARTCMP_DIAGNOSTICS = ('emmc-block-1-partcmp', 'emmc-block-3-partcmp')
+PARTREAD_DIAGNOSTICS = ('emmc-block-1-partread', 'emmc-block-3-partread')
+DEBLOCK_DIAGNOSTICS = ('emmc-block-1-deblock', 'emmc-block-3-deblock')
+BREAKUP_DIAGNOSTICS = ('emmc-block-1-breakup', 'emmc-block-3-breakup')
+SWEEP_DIAGNOSTICS = ('emmc-block-1-sweep', 'emmc-block-3-sweep')
+CONSUME_DIAGNOSTICS = ('emmc-block-3-consume',)
+WIDTH_DIAGNOSTICS = ('emmc-block-3-width4',)
+WIDTHHOLD_DIAGNOSTICS = ('emmc-block-3-widthhold',)
+WIDTHPUB_DIAGNOSTICS = ('emmc-block-3-widthpub',)
+SPEED_DIAGNOSTICS = ('emmc-block-3-speed',)
+BULK_DIAGNOSTICS = ('emmc-block-3-bulk', 'emmc-block-3-bulk-dma')
+LIVE_DIAGNOSTICS = ('emmc-block-3-live',)
+WINDOWS_DIAGNOSTICS = ('emmc-block-3-windows', 'emmc-block-3-verify')
+PARTITION_DIAGNOSTICS = (PARTOBS_DIAGNOSTICS + PARTCMP_DIAGNOSTICS +
+                         PARTREAD_DIAGNOSTICS)
+OBSERVATION_DIAGNOSTICS = (PARTITION_DIAGNOSTICS + DEBLOCK_DIAGNOSTICS +
+                           BREAKUP_DIAGNOSTICS + SWEEP_DIAGNOSTICS +
+                           CONSUME_DIAGNOSTICS + WIDTH_DIAGNOSTICS +
+                           WIDTHHOLD_DIAGNOSTICS + WIDTHPUB_DIAGNOSTICS +
+                           SPEED_DIAGNOSTICS + BULK_DIAGNOSTICS +
+                           LIVE_DIAGNOSTICS + WINDOWS_DIAGNOSTICS)
+DATA_RAMDISK_DIAGNOSTICS = ('report', 'fs-timer', 'fs-timer-hold')
 
 
 def sha(path):
@@ -64,6 +145,10 @@ def main():
                         help='Mu-Silicium checkout for the panic screen '
                              '(default: sibling Mu-Silicium)')
     parser.add_argument('--data-ramdisk', type=Path)
+    parser.add_argument('--data-ramdisk-manifest', type=Path,
+                        help='fixture.json describing the data-ramdisk '
+                             'diagnostic; required for the observation '
+                             'personalities, which require fs-timer-hold')
     parser.add_argument('--trust-cache', type=Path)
     parser.add_argument('--owner-trust-cache', action='store_true',
                         help='use --owner-trust-cache instead of --trust-cache')
@@ -131,13 +216,53 @@ def main():
     data_hash = sha(args.data_ramdisk)
     trust_hash = sha(args.trust_cache)
 
+    data_ramdisk_manifest = None
+    data_ramdisk_diagnostic = None
+    data_ramdisk_hold = None
+    data_ramdisk_manifest_hash = None
+    if args.data_ramdisk_manifest is not None:
+        if not args.data_ramdisk_manifest.is_file():
+            raise SystemExit(
+                f'{args.data_ramdisk_manifest}: data-ramdisk manifest not found')
+        try:
+            data_ramdisk_manifest = json.loads(
+                args.data_ramdisk_manifest.read_text())
+        except json.JSONDecodeError as error:
+            raise SystemExit(
+                f'{args.data_ramdisk_manifest}: invalid JSON: {error}')
+        data_ramdisk_diagnostic = data_ramdisk_manifest.get('diagnostic')
+        if data_ramdisk_diagnostic not in DATA_RAMDISK_DIAGNOSTICS:
+            raise SystemExit(
+                f'{args.data_ramdisk_manifest}: unknown or missing '
+                'data-ramdisk diagnostic; expected one of ' +
+                ', '.join(DATA_RAMDISK_DIAGNOSTICS))
+        data_ramdisk_hold = data_ramdisk_diagnostic == 'fs-timer-hold'
+        declared_hold = data_ramdisk_manifest.get('hold_after_success')
+        if declared_hold is not None and declared_hold != data_ramdisk_hold:
+            raise SystemExit(
+                f'{args.data_ramdisk_manifest}: hold_after_success disagrees '
+                'with the diagnostic')
+        data_ramdisk_manifest_hash = sha(args.data_ramdisk_manifest)
+    if args.diagnostic in OBSERVATION_DIAGNOSTICS:
+        if data_ramdisk_diagnostic is None:
+            raise SystemExit(
+                'the observation personalities require '
+                '--data-ramdisk-manifest naming the fs-timer-hold fixture; '
+                'the old fs-timer fixture panics after success and can '
+                'preempt the eMMC report')
+        if not data_ramdisk_hold:
+            raise SystemExit(
+                f'{args.data_ramdisk_manifest}: the observation '
+                'personalities require the fs-timer-hold data ramdisk; got '
+                f'{data_ramdisk_diagnostic}')
+
     workdir = Path(tempfile.mkdtemp(prefix='gta4l-diagnostic-payload-'))
     try:
         temp_device = workdir / device.name
         shutil.copytree(
             device, temp_device,
-            ignore=shutil.ignore_patterns('.git', 'out', '__pycache__',
-                                          '*.pyc'))
+            ignore=shutil.ignore_patterns('.git', 'out', 'build',
+                                          '__pycache__', '*.pyc'))
         (temp_device / 'board.toml').write_text(
             set_diagnostic_board(board, args.payload_size_mib))
         temp_hash = sha(temp_device / 'board.toml')
@@ -154,7 +279,8 @@ def main():
         ]
         for value in args.kernel_arg:
             command.extend(['--kernel-arg', value])
-        command.extend(['--kernel-arg', DIAGNOSTICS[args.diagnostic]])
+        for token in DIAGNOSTICS[args.diagnostic].split():
+            command.extend(['--kernel-arg', token])
         print('+ ' + ' '.join(command), flush=True)
         subprocess.run(command, cwd=unixnu, check=True)
 
@@ -202,6 +328,11 @@ def main():
                 'path': str(args.data_ramdisk.resolve()),
                 'bytes': args.data_ramdisk.stat().st_size,
                 'sha256': data_hash,
+                'manifest': (str(args.data_ramdisk_manifest.resolve())
+                             if args.data_ramdisk_manifest else None),
+                'manifest_sha256': data_ramdisk_manifest_hash,
+                'diagnostic': data_ramdisk_diagnostic,
+                'hold_after_success': data_ramdisk_hold,
             },
             'trust_cache': {
                 'path': str(args.trust_cache.resolve()),

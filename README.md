@@ -29,8 +29,997 @@ partition layout, payload policy and packaging.
   bounded fixture; this is not a normal-userspace boot. The fixture artifacts
   reproduce byte-for-byte on Linux; see
   [docs/ram-root-fixture-reproducibility.md](docs/ram-root-fixture-reproducibility.md).
-- Display, input, storage, power, GPU and network drivers remain unimplemented
-  or unvalidated.
+- Display, input, power, GPU and network drivers remain unimplemented or
+  unvalidated.
+- **eMMC protocol correction (2026-11-04).** JEDEC defines `BUS_WIDTH`
+  (EXT_CSD byte 183) as `W/E_P`, explicitly not readable; Linux verifies a
+  width switch with a bus test or a read-only EXT_CSD comparison. The earlier
+  B1/H10/H11 "card refused the whole width field" conclusions are therefore
+  withdrawn: a zero byte-183 readback is not evidence of refusal. The H12
+  attempt used value 4, which is reserved (DDR is 5/6), so it did not test
+  DDR. CMD14 bus-test reads may carry an optional pattern CRC16 that the host
+  ignores; the H13 `trc=-12` row therefore does not prove the card's data
+  conversation failed. The stage-7 timeout audit modified `CLOCK_CONTROL`
+  instead of the `TIMEOUT_CONTROL` byte, so its "minimum timeout armed" claim
+  is withdrawn. The 1-bit bus test now uses the JEDEC `0x80` pattern and the
+  two-bit check. CMD18 now uses live FIFO readiness and acknowledges BRR, and
+  both simulators model that separately from the latched bit. New verified
+  switch primitives (`gta4l_emmc_set_bus_width_verified`,
+  `gta4l_emmc_bus_test_verified`) restore both the host and the card on
+  failure and report `GTA4L_EMMC_ERR_WIDTH_RESTORE` when framing is unknown.
+  Stage H15 (`gta4l-emmc-probe=15`) is the corrected 4-bit SDR rung. Its
+  first cold boot (2026-11-05) passed the verified switch and then reproduced
+  the CMD19 write timeout at 4-bit; the old revert was blocked by the latched
+  DAT inhibit. The report/recovery fixes and the content-only H16 rung are
+  documented in `docs/emmc-driver.md` §5.3.31. H16's first boot returned
+  `rc=0 stop=0` with the verified 4-bit switch, the full 4-bit content pass,
+  the verified revert and the block-0 recovery read (§5.3.32), so 4-bit SDR
+  reads are measured on hardware; the remaining barrier is the CMD19
+  completion rule, because the card sends no CRC status token for the tuning
+  pattern. The already-flashed H14 image
+  is not a prerequisite, and F3 remains open. Historical device reports and
+  raw evidence are preserved, not rewritten.
+- A native SDHCI v5/eMMC core is implemented and host-tested in
+  `package/Gta4lEmmc.c`: controller reset, GCC 400 kHz, retained-rail power
+  handshake, CMD3 RCA assignment, enumeration, capacity/partition validation
+  and single-block PIO reads. The opt-in `gta4l-emmc-probe=1/2/3` XNU probe is
+  built into the kernel archive list. Stage 2 (controller and host init)
+  completed on the tablet. Stage 3 (identification) first failed at CMD2 with
+  a response CRC error; a later `cmd2window` run passed CMD2 and stopped at a
+  CMD3 completion timeout, and the `fmt=2` run passed CMD3 and CMD9 and stopped
+  at a CMD7 R1b completion timeout with TC set and CC absent. The `fmt=4`
+  fail-closed image was run on 2026-11-01 on two units (an SM-T505 and the
+  owner's SM-T505N, per the owner); both failed at CMD2 with the same `-8`
+  record, so its CMD7 capture was not exercised. A later 2026-11-01
+  `cmd1gap` candidate added only an 8-us delay after an accepted ready CMD1;
+  it completed the full stage-3 identification sequence (`rc=0`, `step=15`,
+  CMD7 CC and TC observed) on three units (the owner's SM-T505N and two
+  owner-reported SM-T505s). The result is owner-supplied text without a photo
+  file in the tree, supports a timing-sensitive contribution but does not
+  establish the CMD2 cause, and the delay is not proven necessary. On
+  2026-11-02 the stage-1 image, built from the same source, completed
+  identification and both read-only `CMD17` PIO reads (blocks 0 and 1) on the
+  owner's SM-T505N and one of those SM-T505s. Both reports show `step=15`,
+  `log=7`, a protective-MBR type `0xEE` entry starting at LBA 1 in block 0,
+  the `EFI PART` GPT header in block 1 and the recovery-known CSD; the owner's
+  unit also shows the recovery-known CID. The T505N BOOT-only flash and
+  readback record is under
+  `out/gta4l/ram-root-emmc-probe-stage1-evidence/`; the SM-T505 run has no
+  flash record in the tree and its image identity is owner-reported/shared.
+  This is first sector-read content evidence, not a filesystem, block-device,
+  multi-block, DMA, CQE, ICE or write result, and CRC checking remains enabled.
+  An owner-authorized read-only recovery-side readback of blocks 0 and 1 on
+  the owner's SM-T505N independently reproduces the MBR signature and GPT
+  header CRC (`docs/emmc-cmd2-crc-audit.md` §2.12; sector hashes stay in
+  `out/`). On the same day the stage-A image read the full 84-entry primary
+  GPT array (LBAs 2..22), the first usable sector (LBA 34) and the backup GPT
+  header (LBA 61,071,359) with repeated `CMD17` reads at the identification
+  clock. The report (`step=18`, `log=30`) matched a same-session read-only
+  TWRP readback of the same sectors and the pinned recovery GPT dumps; the
+  84 × 128-byte array spans 21 sectors, and the all-zero LBA 22 reflects the
+  four unused trailing entry slots. This closes the stage-A/F1 content claim;
+  it is not a multi-block (`CMD18`), bus-width/high-speed, publication,
+  filesystem or write result. An optional multi-block mode
+  (`gta4l-emmc-mb=1`) is implemented and host-tested. Its first 2026-11-02
+  boot stopped during identification, before any `CMD18` transfer, at the
+  known CMD3-completion timeout. The post-attempt audit fixed a missing SDHCI
+  Multi/Single Block Select bit in the `CMD18` mode word; the corrected image
+  then issued one open-ended `CMD18` over the 21 GPT array sectors and
+  stopped at block ordinal 20 (at least 20 of 21 blocks drained) before the
+  helper's 1,000,000 µs data bound expired (`rc=-11`, no latched controller
+  error, no `TC`), and the explicit `CMD12` stop did not report `CC` or `TC`
+  within its bound. This exercises the multi-block data phase beyond one block
+  but does not establish F2: no established 21/21 transfer, completed stop or
+  content comparison exists (`docs/emmc-driver.md` §5.3.7). The post-bound
+  drain image (§5.3.8) was then booted three times: the first stopped during
+  identification at the same CMD3-completion timeout, the second reached the
+  MD phase and exhausted the 500,000 µs drain window with no additional
+  blocks and no `TC` before the `CMD12` stop again timed out, and the third
+  failed earlier with a single-block `CMD17` data timeout at array LBA 2. The
+  drain therefore did not resolve the stall, H8 is intermittent, and F2
+  remains unproven. The D10 F2 host batch reworks the mode into a two-sector
+  request plus one 21-sector request, each explicitly stopped and byte-compared
+  against the same-boot `CMD17` reference, followed by bounded recovery reads
+  (`docs/emmc-driver.md` §5.3.39). The D10.4a correction then made each request
+  an explicit acceptance barrier: a short or long content/length failure stops
+  before the next request, recovery failures keep their transport and
+  comparison state, and the hardcoded `rc=0` success report is reachable only
+  through one overall gate (`docs/emmc-driver.md` §5.3.40). Both batches were
+  host-tested only. The D10.5 candidate (kernel `bb22f6ca…`, payload
+  `93110d8c…`, boot image `bcc93a47…`, 8/8 contract and 18/18 gate) was then
+  built and flashed BOOT only. Its owner-reported **first cold boot**
+  (2026-11-05) returned `rc=0 step=19 log=55 mb=1`: the two-sector and
+  21-sector CMD18 requests both completed (`2/2` and `21/21` sectors), every
+  sector was byte-validated against the same-boot CMD17 reference
+  (`s=0/2/2/2/0/0/0003/0000/00000b00`,
+  `l=0/21/21/21/0/0/0003/0000/00000b00`), both explicit CMD12 stops reported
+  `0x0003`, and the block-0/LBA-2 recovery reads were clean (`mbsame=1`,
+  `rec=0/1/0`). **F2 is measured PASS for this one cold boot at 1-bit SDR,
+  400 kHz `[C]`** (`docs/emmc-driver.md` §5.3.41). It is a single cold-start
+  observation, not repeatability, a reliability result, general performance or
+  multi-block publication; the boot ordinal and cold class are owner-reported.
+  Stage B1 (`gta4l-emmc-probe=4`) is implemented and
+  host-tested: it switches the card EXT_CSD BUS_WIDTH to 4-bit and then
+  8-bit, verifies the byte-183 readback and the SDHCI `HOST_CONTROL` bit,
+  runs the CMD19/CMD14 bus test at each width, and repeats the stage-A
+  content sums against the 1-bit baseline. The first B1 image was flashed to
+  BOOT only and booted three times on 2026-11-02. Only one boot reached B1; it
+  stopped at the 4-bit byte-183 readback (`sw=0`, `swrc=-19`, stop=1), before
+  CMD19/CMD14 or any per-width content pass. The other two boots stopped
+  before B1 at the CMD3-completion timeout and a block-1 CMD17 data timeout.
+  A rebuilt image with the report-completeness fields was then flashed to
+  BOOT only and booted five times (warm resets): two boots reached B1 and
+  reproduced the same 4-bit stop with a clean CMD6 R1 (`c6=00000900`), the
+  host width bit set and read back (`ha=02`), and an EXT_CSD read at the
+  attempted width that returned the 1-bit content (`es=000009cb`, byte 183
+  still 0). The other three boots failed before B1 at two TC-only/no-error
+  CMD17 timeouts and one CMD3-completion timeout. A cold-boot session then
+  booted the same image three times with full power-down and power-on: one
+  stopped before B1 at the block-1 CMD17 timeout and two reproduced the same
+  4-bit tuple byte-for-byte, and the same-session BOOT re-read matched the
+  post-flash hash. The 4-bit stop is therefore 4/4 across warm and cold
+  boots, a retained warm-reset card state is excluded as its cause, and all
+  eight boots are bound to the flashed bytes. Stage B1C
+  (`gta4l-emmc-probe=5`) was then flashed BOOT only and booted seven times
+  (two cold, five warm) without reflashing: both boots that reached the
+  continuation entered on exactly the observed 4-bit tuple (`bc=1`,
+  `c6=00000900`, `hb=00`→`ha=02`, `es=000009cb`, `sw=0`, `swrc=-19`) and
+  both timed out in the CMD19 write phase (`tt=1`, `trc=-11`,
+  `tw=00000000`, `te=00000000`;
+  `FAIL fail=1/19/0/0000133a/0000/0011/03f801f6/18`), with CC and
+  BufferWriteReady latched but no TC and no error bit — the project's first
+  data-write-direction terminal sample. The two reports are identical except
+  for the stack counters, and a full cold power cycle occurred between them,
+  so the timeout is deterministic conditional on reaching the rung and is
+  not caused by card state retained from an earlier interrupted CMD19. The
+  content pass and byte-183 re-read were skipped after the hard error;
+  `e183a`/`esa` are placeholders. The other five boots stopped before B1
+  (four CMD17 TC-only timeouts, one CMD3 timeout), and the same-session BOOT
+  re-read matched the post-flash hash. The 4-bit read paradox is unchanged
+  (`es=000009cb` at the attempted width). F3 remains unproven
+  (`docs/emmc-driver.md` §5.3.12–5.3.19,
+  `docs/emmc-cmd2-crc-audit.md` §2.18–2.23). The stage-6 1-bit CMD19/CMD14
+  discriminator (`gta4l-emmc-probe=6`) was built from clean `5f57dcb`
+  (kernel `a20d6269…`, payload `fdaa507d…`, boot image `90cf074c…`),
+  flashed BOOT only (p69 `c6a9f8e0…` → `1ea626f5…`) and booted thirteen
+  times without reflashing (seven cold, six warm; both p69 re-reads
+  matched). Boots 1 and 12, both cold, reached the rung and timed out in the
+  1-bit CMD19 write phase with the same terminal class as the 4-bit
+  continuation (`tt=1`, `tw=00000000`, `te=00000000`, `trc=-11`; CC and
+  BufferWriteReady latched, no TC, no error; present `0x03f801f6`), and no
+  CMD6 was issued, so the data-write path is broken independent of bus
+  width. The other eleven boots stopped pre-B1 (eight H8 CMD3 timeouts,
+  three CMD17 TC-only/no-error timeouts, one at the GPT array's LBA 2). The
+  `trc=-20` class remains unobserved; the byte-183 paradox is unchanged.
+  The next rung (owner-chosen) was a host data-timeout audit
+  (`gta4l-emmc-probe=7`). The stage-7 image was built from clean `d158378`
+  (kernel `9d7ae51e…`, payload `b4171d96…`, boot image `3cc5f9f1…`),
+  flashed BOOT only (p69 `1ea626f5…` → `13f88342…`) and booted twelve times
+  without reflashing (one cold, eleven warm; the post-batch p69 re-read
+  matched). Five boots reached the DTO stage and reported `stop=12` with
+  identical fields; the stop is a probe-gate artifact, not a device result:
+  TOUTVAL `[7:3]` was already zero at rest, and the forced-write readback
+  differed only on the read-only `INT_STABLE` bit. E1 was silent — no error
+  bit of any kind latched while BufferReadReady streamed seven blocks
+  roughly 3× past the 20.5 ms minimum, then CMD12 got no R1b (`-7`) and
+  the recovery read ended in ERR_INHIBIT (`-17`), so the controller never
+  raises data-timeout in this configuration. The other seven boots stopped
+  pre-B1 (six block-1 CMD17 TC-only timeouts and one post-CMD7 CMD13
+  completion timeout). E2 did not run, the `trc=-20` class remains
+  unobserved, the byte-183 paradox is unchanged, and F3 remains unproven.
+  The next rung is B2 high-speed timing (`gta4l-emmc-probe=8`), implemented
+  and simulator-tested: after the stage-A pass it switches EXT_CSD
+  `HS_TIMING` (byte 185) to 1, ramps the GCC SDCC1 APPS RCG to the pinned
+  50 MHz floor row (`0x20B`; the 52 MHz class floors to 50 MHz), repeats
+  the full content pass at that clock and compares every sum with the
+  400 kHz baseline, then drops the clock and clears byte 185 before a
+  recovery read. It always reports (`GTA4L-EMMC B2 REPORT`) and stops with
+  0/10/11/12/13/14; it issues no CMD19/CMD14, width switch or user-data
+  write. The host batch also narrows the stage-7 arming gate to TOUTVAL
+  only, so the read-only `INT_STABLE` bit cannot block a DTO report. Core
+  143/86 and probe 85/51; the `report-width-b2` fixture fits the 2048-byte
+  buffer. The stage-8 image was then built from `9a84215` plus the packager
+  fix `9d6fd1f` (kernel `fc3d5ee3…`, payload `9d17d0a1…` with a 7/7
+  contract, boot image `e5bc5024…` with an 18/18 gate), flashed BOOT only
+  (p69 `13f88342…` → `2cd82e0f…`) and booted four times without reflashing
+  (one cold, three warm; the post-batch p69 re-read matched). Boots 1 and 3
+  stopped pre-B2 at the H8 CMD3-completion timeout (`stage=8`, `rc=-7`,
+  `step=9`); boots 2 and 4 produced field-identical `B2 REPORT rc=0 stop=0`
+  reports: byte 185 switched to 1 (`S … hs=01`), the RCG read `0x20b` (the
+  pinned 50 MHz floor row), the full stage-A content pass matched at 50 MHz
+  (`T same=1 div=0`, all 21 block sums), and the revert was clean
+  (`V … hs=00 rcg=00002017`, block-0 `qb0=62084b66`). F4 is therefore
+  measured PASS at 1-bit/50 MHz (content-level only; not a width, write,
+  DMA, CQE, ICE, HS200 or frequency-measurement result), and the cold boot
+  is not part of that evidence. F3 remains unproven. The flash record and
+  transcript are in `out/gta4l/ram-root-emmc-probe-b2-evidence/`.
+  The next rung is H9 (`gta4l-emmc-probe=9`), implemented and
+  simulator-tested: the standard read-only identification sequence runs once
+  with one designed duplicate CMD3 after the H8 completion timeout (same
+  argument and timing path, never a third attempt), then stops after the TRAN
+  wait before any EXT_CSD read or stage-A pass and always reports
+  `GTA4L-EMMC H9 REPORT`. It issues no CMD6, width switch or user-data
+  access; the only new card-facing action is the duplicate CMD3. Core 148/90
+  and probe 91/51; the `report-width-h9` fixture is the seventh width
+  materialization. The stage-9 image was then built from clean `a952a09`
+  (kernel `75e529a3…`, payload `e1b474f7…` with a 7/7 contract, boot image
+  `92d9471c…` with an 18/18 gate), flashed BOOT only (p69 `2cd82e0f…` →
+  `25385fd7…`) and booted four times without reflashing (one cold, three
+  warm; the post-batch p69 re-read matched). Boot 2 was the clean control
+  (`rc=0 stop=0`, a clean CMD3 within 26 poll iterations ≈0.29 ms); boots
+  1/3/4 were field-identical `rc=-7 stop=11` reports: attempt 1 exhausted
+  the full 100,000-iteration ≈1.14 s window completion-silent, and the
+  approved duplicate CMD3 also timed out (0/3 recovery), so no in-boot
+  retry policy is adopted and the flake stays per-boot random (3/4 this
+  batch). F3 remains unproven. The flash record and transcript are in
+  `out/gta4l/ram-root-emmc-probe-h9-evidence/`.
+  The next rung is H10 (`gta4l-emmc-probe=10`), the width-at-HS
+  continuation, implemented and simulator-tested: after the stage-A pass it
+  enters HS (byte 185 = 1, 50 MHz), switches EXT_CSD BUS_WIDTH (byte 183)
+  to 4-bit at HS, runs one CMD19/CMD14 round trip and the content pass at
+  4-bit/HS, then reverts the width and the timing and re-reads block 0.
+  It always reports (`GTA4L-EMMC H10 REPORT`) and stops with
+  0/10/11/12/13/14/15/16/17; it issues no 8-bit step, no retry and no
+  user-data write. Core 148/90 unchanged; probe 102/56 (was 91/51); the
+  `report-width-h10` fixture is the eighth width materialization. The
+  device run followed on 2026-11-03 (BOOT-only flash, p69 `25385fd7…` →
+  `38c74815…`, 15 boots without reflashing): one H10 verdict (boot 2) —
+  `rc=-19 stop=12` with the legacy width tuple at HS (`sw=0`,
+  `swrc=-19`, clean CMD6 R1, host width set and read back, byte-183
+  readback 0, EXT_CSD re-read equal to the 1-bit-at-HS sum) — so the card
+  ignores the 4-bit BUS_WIDTH write at HS exactly as at 400 kHz and the
+  timing-class model is excluded; the other 14 boots were pre-HS CMD3
+  completion-silent stops (including both cold boots), and the verdict
+  carries a single-sample caveat because the two-matching rule was not
+  met. F3 remains unproven. The flash and boot records are in
+  `out/gta4l/ram-root-emmc-probe-h10-evidence/`.
+  The next rung is H11 (`gta4l-emmc-probe=11`), the width-value
+  continuation, implemented and simulator-tested: it replays the H10
+  4-bit switch at HS as a record-only sample, attempts the 8-bit
+  BUS_WIDTH value (byte 183 = 2, still SDR) at HS, and only when that
+  switch is honored runs one CMD19/CMD14 round trip and the content pass
+  at 8-bit/HS before reverting the width and the timing and reading
+  block 0. A clean-shape W4 mismatch re-opens the H10 verdict as
+  per-boot random; a W8 readback that disagrees with its own re-read sum
+  is the byte-183 paradox row. It always reports (`GTA4L-EMMC H11
+  REPORT`) and stops with 0/10/11/12/13/14/15/16/17/18; it issues no
+  DDR variant, no CMD18/CMD25, no retry and no user-data write. Core
+  148/90 unchanged; probe 116/64 (was 102/56); the `report-width-h11`
+  fixture is the ninth width materialization. The device run followed on
+  2026-11-03 (BOOT-only flash, p69 `38c74815…` → `2f6deba3…`, five boots
+  without reflashing): boots 1–4 stopped pre-identification at the H8 CMD3
+  completion timeout (facts only), and boot 5 was the only H11 verdict —
+  `rc=-19 stop=12`, with the W4 replay matching the H10 legacy tuple
+  field-for-field and the W8 8-bit attempt ignored with the same tuple, so
+  the byte-183 refusal is sticky and covers both nonzero SDR values (the
+  whole SDR field). **Correction (2026-11-04): byte 183 is `W/E_P` and not
+  readable, so this is not evidence of a card refusal; the width conclusion
+  is withdrawn.** The V/X reverts were clean and B/T/Q were not run. F3
+  remains unproven; the open owner questions are the DDR bit-plane and the
+  CMD19 write-phase wedge. The flash and boot records are in
+  `out/gta4l/ram-root-emmc-probe-h11-evidence/`.
+  The next rung is H12 (`gta4l-emmc-probe=12`), the record-only DDR
+  attempt, implemented and simulator-tested: after the stage-A pass it
+  enters HS and issues one CMD6 SET of byte 183 = 4 (**correction: value 4
+  is reserved, not the 4-bit DDR code; DDR is 5/6**),
+  waits TRAN, applies only the 4-bit SDR host DAT width for the
+  verification read, re-reads EXT_CSD, reverts byte 183 to 0 and the
+  timing to legacy, and reads block 0. The controller DDR configuration is
+  never touched. A clean refusal (readback 0 and a sum that changed only
+  by byte 185) closes the width-study conclusion; a readback of 4 is the
+  honored row and stops for an owner decision; a disagreeing
+  readback/sum pair is the byte-183 paradox row. It always reports
+  (`GTA4L-EMMC H12 REPORT`) and stops with 0/10/11/12/13/14/15; it issues
+  no value 5, no CMD19/CMD14, no CMD18/CMD25 and no user-data write. Core
+  148/90 unchanged; probe 128/69 (was 116/64); the `report-width-h12`
+  fixture is the tenth width materialization. The device run followed on
+  2026-11-03 (BOOT-only flash, p69 `2f6deba3…` → `0f7ec22c…`, five boots
+  without reflashing): boots 1, 2 and 4 stopped pre-identification at the
+  H8 CMD3 completion timeout and boot 3 at a block-1 CMD17 data timeout
+  (facts only), and boot 5 was the only H12 verdict — `rc=-15 stop=12`.
+  The record-only byte-183 = 4 CMD6 answered clean (`c6=00000900`) but
+  the 4-bit SDR verification re-read failed with card status (`sw=0`,
+  `swrc=-15`, `es=00000000`); no byte-183 = 4 readback was obtained, and
+  the V/X reverts and Q recovery read were clean. With the only written
+  value differing (4 versus the refused 1 and 2), the post-switch
+  behavior changed, coherent with the card toggling into 4-bit DDR for
+  data: the paradox row is measured but unverified and the whole-field
+  refusal row is not closed. F3 remains unproven. The flash and boot
+  records are in `out/gta4l/ram-root-emmc-probe-h12-evidence/`.
+  The host-only write-phase wedge audit is
+  [docs/emmc-write-wedge-audit.md](docs/emmc-write-wedge-audit.md): the
+  command phase completes and the controller requests the CMD19 block, but
+  the data phase never latches `TC` because CMD19 is a bus-test pattern,
+  not a normal data write, and the card sends no CRC status token; the
+  port's `TOUTVAL=0x0E` at 400 kHz puts the hardware timeout about 22
+  minutes away, far beyond the 1 s window every observed wedge used. The
+  audit also records the missing per-request data reset as a recovery gap
+  and names a data-reset + CMD14 rung as the recommended owner-gated
+  follow-up (the forced-`TOUTVAL=0` 1-bit write is second). No device work
+  was performed and no write-side goal is claimed.
+  The first wedge-ladder rung is H13 (`gta4l-emmc-probe=13`), implemented
+  and simulator-tested: after the stage-A pass it issues one 1-bit CMD19
+  write, one bounded SDHCI data-circuit reset (`SOFTWARE_RESET` data bit
+  with a self-clear poll), the post-reset `PRESENT_STATE`, one CMD14 read
+  with the existing pattern comparison and a block-0 recovery read, then
+  reports (`GTA4L-EMMC H13 REPORT`) and stops with 0/10/11/12/13/14/15/16/17.
+  It issues no CMD6, CMD18, CMD25 or user-data write and changes no card
+  width or timing. Core 160/98 (was 148/90); probe 139/69 (was 128/69);
+  the `report-width-h13` fixture is the eleventh width materialization.
+  The device run followed on 2026-11-03 (BOOT-only flash, p69 `0f7ec22c…`
+  → `18d2a83d…`, boot count lost, verdict on an estimated ~18th boot
+  without reflashing): about seventeen boots stopped pre-identification at
+  the H8 CMD3 completion timeout (facts only), and the only H13 verdict was
+  `rc=-12 stop=14`. The CMD19 write reproduced the wedge (`wrc=-11`,
+  `err=0000`, `nrm=0011`, `pst=03f801f6`; the same terminal tuple as the
+  B1C/B1C-1 rows), the bounded reset self-cleared (`rc=0 wr=04 rb=00 it=6
+  dinh=0`), but CMD14 failed with `ERR_DATA_CRC` (`trc=-12`, no pattern
+  words) and the block-0 recovery read was refused with `ERR_INHIBIT`
+  (`rc=-17`). The reset clears the controller latch, but **correction
+  (2026-11-04): the CMD14 `ERR_DATA_CRC` may be the optional pattern CRC16
+  that the host ignores, so this row does not prove the card's data
+  conversation failed.** The verdict is a single sample (the two-matching
+  rule is unmet) and F3 remains unproven. The flash and boot
+  records are in `out/gta4l/ram-root-emmc-probe-h13-evidence/`. The next
+  rung is the forced post-write CMD12/CMD13 drain sample, to be drafted
+  only after this record lands.
+  The second wedge-ladder rung is H14 (`gta4l-emmc-probe=14`), implemented
+  and simulator-tested: it keeps the H13 form and inserts one forced CMD12
+  `STOP_TRANSMISSION` (R1b, argument 0, no ACMD12 transfer-mode bit) plus
+  one CMD13 `SEND_STATUS` (R1) between the post-reset sample and the
+  record-only CMD14/Q reads, while the post-reset inhibit is clear. The
+  CMD12 entry wait applies the SDHCI stop-command `DAT_INHIBIT` exemption;
+  CMD13 keeps the normal both-inhibit wait. It reports
+  (`GTA4L-EMMC H14 REPORT`) and stops with 0/10/11/12/13/14/15/16/17, and
+  it issues no CMD6, CMD18, CMD25 or user-data write and changes no card
+  width or timing. The drain is local to
+  `gta4l_emmc_post_write_drain()`; `TIMEOUT_CONTROL` is untouched. Core
+  168/104 (was 160/98); probe 151/77 (was 139/69); the
+  `report-width-h14` fixture is the twelfth width materialization. **H14 is
+  paused by the 2026-11-04 correction: the write-wedge audit itself says
+  CMD12 is not appropriate for the single-block CMD19 write, and the drain's
+  stop-code mapping conflated distinct failures. The BOOT-only image was
+  flashed, but no boot or report is required and it is not a prerequisite
+  for H15.** F3 remains unproven.
+  The corrected width rung is H15 (`gta4l-emmc-probe=15`): after the stage-A
+  baseline it performs a verified 4-bit SDR switch (CMD6, CMD13 TRAN wait,
+  host width apply/readback, and an EXT_CSD read whose read-only properties
+  must match the 1-bit baseline), the corrected CMD19/CMD14 test (optional
+  pattern CRC tolerated; JEDEC 1-bit `0x80`/two-bit rule), the full 4-bit
+  content pass, a verified return to 1-bit and the block-0 recovery read. Its
+  first cold boot (2026-11-05) **passed the verified 4-bit switch**
+  (`vf=1`, host `00→02`) and then reproduced the CMD19 write-phase timeout
+  at 4-bit; the old revert's pre-switch EXT_CSD read was blocked by the
+  latched `DAT_INHIBIT`, so no revert CMD6 was issued. The report now prints
+  explicit attempted flags and a T result code, and the baseline-based
+  recovery clears the data circuit before CMD6. The content-only isolation
+  rung is H16 (`gta4l-emmc-probe=16`): the same verified switch and content
+  pass with no CMD19/CMD14 at all. Its first boot (2026-11-05, warm reboot)
+  returned `rc=0 stop=0`: verified 4-bit switch on the first CMD6 attempt,
+  the full 4-bit content pass matching the 1-bit baseline
+  (`same=1 div=0`, `b0=62084b66`), a verified baseline-based revert
+  (`02→00`) and a matching block-0 recovery read. Stage H17
+  (`gta4l-emmc-probe=17`) is the Linux-compatible completion rung: after the
+  same verified switch and 4-bit content pass it runs one CMD19 pattern write
+  whose expected data timeout is recorded and tolerated, one bounded data
+  circuit reset and one CMD14 read-back before the verified revert and the
+  recovery read. The rule matches `mmc_bus_test()` (which discards every
+  `BUS_TEST_W` error and lets `BUS_TEST_R` decide) and TI erratum SPRZ436H
+  i836 (no CRC status token is generated for the tuning pattern). Its `B`
+  line records `wrc`/`rst`/`ci` beside `trc`/`tw`/`te`. H15/H16/H17 stop
+  codes are 0/10/11/12/13/14/15/16, with 10 (baseline read failed) and 13
+  (bus test) the additions. No HS, DDR, 8-bit, CMD18, CMD25 or
+  user-data write. Core 179/104 and probe 176/84. **4-bit SDR sector reads
+  are measured `[C]`**, and **F3 is measured PASS at 4-bit SDR, 400 kHz
+  `[C]`**: the fourth boot of the H17 image (cold, then three warm; the first
+  three stopped at the known pre-identification CMD3 class) returned
+  `rc=0 stop=0` with the CMD19 timeout recorded (`wrc=-11`), a clean bounded
+  data reset (`rst=0`), the CMD14 pattern match (`trc=0`,
+  `tw=te=000000a5`), the matching 4-bit content pass, the verified revert
+  (`02→00`) and `qb0=62084b66`. The tolerated timeout keeps `fail=1` in the
+  report by design. The 8-bit width is untried and stays open separately.
+  The H17 image (`13938e49…`, payload `72f6e2d4…` 7/7, gate 18/18) was
+  flashed to BOOT only (`3adb7401…` → `60d3d4bc…`, verified prefix and
+  unchanged tail, RECOVERY/EFS/sec_efs unchanged, battery 100%). The payload
+  contract checker now derives its diagnostic list from the name map after
+  the first build was refused for missing stage 17.
+  The Stage-C/F5 publication survey is in
+  [docs/gta4l-storage-publication-design.md](docs/gta4l-storage-publication-design.md):
+  it finds that `IOStorageFamily` (including `IOBlockStorageDriver`,
+  `IOGUIDPartitionScheme` and `IOMediaBSDClient`) is already prelinked, that
+  `NativeRamBlock`/`NativeVirtioBlock` pin the `IOBlockStorageDevice` shape,
+  and that the smallest gta4l path is a read-only `IOResources`-matched
+  block driver over the existing CMD17 core, with the personality behind a
+  new guarded kernel-config entry. It also records that the existing
+  storage-ABI audit/bindings artifacts are absent in this checkout, so
+  qualification is the first gate; the corrected design advertises transfer
+  limits to the family, sends the media-state notification on a read error,
+  and treats whole-device publication plus a media-path read as F5 while
+  reporting GPT partition discovery separately. The Linux/QEMU qualification
+  path then passed: `scripts/audit-gta4l-storage-interface.py` stopped the
+  actual `ca983f7d…` candidate at `_bsd_init`, recorded the live
+  `IOBlockStorageDevice`/`IOService` metaclasses and ran the full 190-slot
+  audit (176 kernel bindings, native 4K, original storage code unchanged).
+  The D8 re-audit against the final `b509c511…` candidate reports 190 slots
+  and 181 kernel bindings (167 inherited + 14 pure virtual) with 0
+  binding-target diffs. The audit artifacts are pinned in
+  `docs/evidence-baseline.md`, and `scripts/test-gta4l-storage-abi.py`
+  covers the positive audit, mutated snapshots, a wrong candidate and the
+  preserved run record. The portable request helper
+  (`package/Gta4lEmmcBlockCore.c/.h`) passes 48 scenarios and 38 mutation
+  controls; it uses explicit READ/WRITE/INVALID directions, returns
+  per-request completed bytes, is read-only, capped at 64 blocks/32 KiB and
+  fails closed. The thin read-only adapter (`package/Gta4lEmmcBlock.cpp`)
+  and its policy object are also implemented:
+  `scripts/build-gta4l-emmc-block.py` produced the qualified
+  `libGta4lEmmcBlock.a` (`ff447a48…`) against the D8 `b509c511…`
+  candidate (190 virtual methods, 26 concrete overrides, no unresolved
+  imports; the earlier P5-1 build was `fedd4bc3…` against `ca983f7d…`), and
+  `scripts/test-gta4l-emmc-block.py` passes 55 adapter scenarios and 3
+  adapter-source mutations on top of the 48/38 helper suite. The adapter maps the audited override set,
+  advertises 64 blocks/32768 bytes, accepts report mode
+  `gta4l-emmc-block=1` and chunked report mode `gta4l-emmc-block=3`, refuses
+  mode 2 and conflicting diagnostic arguments, and waits for the whole
+  `IOMedia` plus a same-boot media-path read in its bounded report thread. The D8 batch enables the personality
+  in the board configuration (`CONFIG_XNU_NATIVE_GTA4L_EMMC_BLOCK=y`) and
+  adds the shared configuration-to-flag translation, so the D8 host kernel
+  `b509c511…` compiles and links the adapter.
+
+  The first P5-2 device run published the whole `IOMedia` but failed its
+  report read because the report client was not open; the D9.4 correction
+  opens the media before the read and closes it exactly once on every exit.
+  The corrected p5b candidate (`2f8238b9…`, block archive `6d36826a…`,
+  payload `47b9593d…`, boot image `e256b27d…`, 18/18 gate) was flashed BOOT
+  only with fresh owner approval. The owner-supplied report is `rc=0
+  stop=0` with `whole=1`, 61,071,360 blocks of 512 bytes, `writable=0`,
+  `content=GUID_partition_scheme` and a media-path read matching the
+  same-boot baseline (`same=1`); the terminal panic is the intentional
+  report-mode panic. **F5 is measured PASS for this boot at 1-bit SDR,
+  400 kHz `[C]`.** The boot ordinal and cold/warm class were not supplied;
+  the owner confirmed TWRP recovery, and a host-only audit found `count=80`
+  consistent with the validated 80-entry GPT (the `expected=84` field is the
+  entry-array slot count, not a populated count). Partition completeness is
+  not claimed from the report alone. F2 repeatability/reliability, 8-bit,
+  4-bit/HS publication, mount/root switch and F6 remain separate gates.
+  Evidence is under `out/gta4l/ram-root-emmc-block-p5b-evidence/`.
+  The 2026-11-06 host-only D13 readiness pass is recorded in
+  [docs/emmc-d13-readiness-2026-11-06.md](docs/emmc-d13-readiness-2026-11-06.md):
+  it grounds the current adapter/CMD18 seam, proposes a conservative
+  two-sector chunk contract with exact-count and clean-stop delivery, and
+  enumerates the required host scenarios. The readiness pass itself
+  implemented nothing. The follow-up N3 host implementation is recorded in
+  [docs/emmc-driver.md](docs/emmc-driver.md) §5.3.48: `gta4l-emmc-block=3`
+  adds two-sector CMD18 chunks with an adapter-owned 1024-byte bounce,
+  explicit transport/completed/stop results, exact-count and clean-CMD12
+  delivery, first-failure preservation and fail-closed suffix suppression;
+  `=1` stays CMD17 and `=2` remains refused. The N3 corrective host batch
+  fixed the multi-result stop-failure accounting, wired the callback result
+  contract and added the mode-3 controlled qualification reporter with
+  exact-byte comparison, CMD18/CMD12 and odd-tail accounting,
+  incidental-attribution exclusion, a bounded watchdog snapshot and
+  terminal-race suppression. The block suite now passes 48 core
+  scenarios/38 mutation controls, 55 adapter scenarios and 3 adapter-source
+  mutations, and `emmc-block-3` is accepted end-to-end by the diagnostic
+  builder, checker, packager and tests. Host acceptance is complete for the
+  intentional mode-3 path; it is not hardware or initialization-reliability
+  acceptance. The ~128–144 s pathological 64-sector synchronous
+  gate-hold bound is a recorded host-development risk; the 30 s report
+  watchdog does not qualify general I/O. N3 builds nothing, launches no
+  QEMU, accesses no device and authorizes no candidate, boot or reliability
+  claim; N4 needs separate approval. The D12.6
+  panic-format observation closeout is in
+  [docs/emmc-d12.6-panic-format-observation-2026-11-06.md](docs/emmc-d12.6-panic-format-observation-2026-11-06.md).
+  The N4 candidate build and the N5 hardware observation are recorded in
+  [docs/emmc-n5-integration-observation-2026-11-07.md](docs/emmc-n5-integration-observation-2026-11-07.md):
+  the mode-3 candidate (prelinked kernel `f37f8404…`, packaged kernel
+  `2e6d91a0…`, payload `4a400ca8…` with a 9/9 contract and BOOT image
+  `54cdbfb6…` with an 18/18 gate) was flashed BOOT only to p69 with prefix and
+  protected-partition verification. One owner-classified cold boot returned
+  `rc=0 stop=0 mode=3` with the read-only whole media and an LBA 1 baseline
+  match; one two-block and one three-block IOMedia read at LBA 2 delivered
+  1,024 and 1,536 exact bytes through one two-sector CMD18 chunk each, with a
+  clean explicit CMD12 and a CMD17 odd tail for the three-block request. The
+  report's `count=22 expected=84` partition snapshot is an unsynchronized
+  mid-publication observation, not a completeness verdict; `expected` is the
+  GPT entry-array slot count and the validated GPT has 80 populated entries.
+  Acceptance is limited to those two requests on that one cold boot at 1-bit
+  SDR, 400 kHz; repeatability, initialization reliability, wider/faster modes,
+  arbitrary I/O, mount/root switch, DMA/CQE/ICE and partition completeness
+  remain separate gates. The one-boot budget is consumed and no further boot
+  or flash is authorized.
+  The N6 reliability observation is recorded in
+  [docs/emmc-n6-reliability-observation-2026-11-07.md](docs/emmc-n6-reliability-observation-2026-11-07.md):
+  the unchanged D12.6 stage-9 image (`7c76c7eb…`, payload `e384cc06…`) was
+  flashed BOOT only to p69 after backing up the N5 image, and one
+  owner-classified cold boot returned `rc=0 stop=0 sub=1 att=1 retry=0/0`
+  with a 25-iteration CMD3 poll, command complete, no timeout capture and no
+  recorded error. This is a second clean cold-boot control, not a
+  reliability qualification or a failure-rate estimate; initialization
+  reliability remains open and the N6 boot budget is consumed.
+  The N8 bounded partition-observation design is in
+  [docs/emmc-n8-partition-observation-design-2026-11-07.md](docs/emmc-n8-partition-observation-design-2026-11-07.md):
+  it replaces the first-nonzero partition snapshot with an opt-in
+  `gta4l-emmc-partobs=1` deadline and count-unchanged window, and keeps
+  `complete=0` explicit; a stable count is not a completeness claim. N8.2
+  host implementation and tests are complete (including the
+  `emmc-block-1-partobs`/`emmc-block-3-partobs` payload personalities). N8.3
+  then produced the host-only candidate: prelinked kernel `4dcbf24d…`, linked
+  archive `f9f83526…`, storage-ABI audit `a30cfcde…`, packaged kernel
+  `023c8ff8…`, payload `5f6759f2…` (11/11 contract) and BOOT image
+  `3d7e71af…` (18/18 gate, only the ramdisk differs from the `ce4d76e8…`
+  baseline). N8.4 flashed that image to p69 only and performed one
+  owner-controlled first cold boot; the RAM-root fixture passed but its
+  intentional panic won before the eMMC report, so the observation is
+  inconclusive and the boot budget is consumed
+  ([docs/emmc-n8.4-partobs-observation-2026-11-07.md](docs/emmc-n8.4-partobs-observation-2026-11-07.md)).
+  The host-only correction adds an additive `fs-timer-hold` fixture (original
+  `fs-timer` unchanged) and makes both partobs personalities require a
+  `--data-ramdisk-manifest` naming that hold fixture. N8.5 then built payload
+  `28eafd24…` (11/11) and BOOT image `b4f4f1ea…` (18/18) with the hold
+  fixture and flashed p69 only; full p69 readback is `9d51fe80…`, the
+  pre-flash N8.3 candidate is saved as `boot-before-n8.5.img.xz`
+  (`e5b43228…`), and RECOVERY/EFS/sec_efs are unchanged. One owner-classified
+  first cold boot then returned the clean mode-3 report (`rc=0 stop=0 mode=3`)
+  with the read-only whole media, an LBA 1 baseline match, exact two- and
+  three-block reads, and `PARTOBS final=80 stable=1 complete=0`: publication
+  grew from 39 to 80 across eight nominal samples and held for 250 ms, but a
+  count is not an exact partition-set comparison. The boot budget is consumed;
+  no retry or reflash is authorized. The host-only N9.1 design for an opt-in,
+  bounded, read-only exact GPT-to-`IOMedia` range comparison is in
+  [docs/emmc-n9.1-gpt-iomedia-comparison-design-2026-11-07.md](docs/emmc-n9.1-gpt-iomedia-comparison-design-2026-11-07.md);
+  it preserves N8's `complete=0` and does not silently upgrade it. N9.2 then
+  implemented `gta4l-emmc-partcmp=1` on the host: validated primary/backup
+  GPT, exact sorted-range comparison against direct GUID-scheme children,
+  bounded snapshots and the `PARTMAP` line, with
+  `emmc-block-1-partcmp`/`emmc-block-3-partcmp` payload personalities and the
+  partobs+partcmp refusal. Host suites pass (core 48 scenarios/38 mutation
+  controls; adapter 85 scenarios/16 adapter and eight policy mutation
+  controls; diagnostic payload 28 checks; packager self-test 11 checks). No
+  candidate build, device access, flash or boot was performed in N9.2, and
+  N9.3/N9.4 remain separately gated. N9.3 then built the host-only
+  `emmc-block-3-partcmp` candidate: prelinked kernel `fd2c8c65…`, requalified
+  archive `02cb5563…`, payload `fd73b37f…` (14/14 contract) and BOOT image
+  `fa55ef61…` (18/18 gate), after moving the comparator scratch to one
+  bounded allocation to keep `Gta4lEmmcBlock` under XNU's 16 KiB kalloc type
+  limit (object 14,016 bytes). No flash, boot or device access was performed;
+  N9.4 remains separately gated. N9.4 then flashed that image BOOT-only to p69
+  and consumed one owner-controlled cold boot: the report reached the bounded
+  stop but failed at whole-media discovery with `gpt=0 reason=10 prop=0
+  samples=0 complete=0`, before any GPT validation or comparison, and the
+  owner returned to TWRP. The cause is source-grounded: the real whole
+  `IOMedia` carries `Whole`, `Size`, `Content` and `Writable` but no `Base`,
+  while `findExactWholeMedia()` required `Base=0`; the host seam had always
+  set `Base` on whole media and so masked the defect. The host seam now pins
+  the hardware signature with a `partcmp-whole-no-base` scenario, and the
+  owner-approved host-only correction changed `findExactWholeMedia()` to
+  accept an absent `Base` as the implied zero while still rejecting a present
+  nonzero or wrong-typed `Base`; partition media still require `Base`. The
+  scenario is inverted to require the full comparison and the new
+  `partcmp-whole-base-invalid` control rejects the present nonzero and
+  wrong-type cases before any read. The block suite passes 48 core
+  scenarios/38 mutation controls and 87 adapter scenarios/16 adapter and
+  eight policy mutation controls. No candidate rebuild, ABI/QEMU audit, flash,
+  boot or retry was performed in the correction batch, and no
+  partition-completeness or reliability claim is made. N9.5 then built the
+  corrected host-only candidate: prelinked kernel `a610e9d1…`, candidate
+  audit `out/gta4l/storage-abi-a610e9d1` (190 slots, 181 bindings, 26
+  overrides, 0 unresolved), requalified archive `bd394f12…`, packaged kernel
+  `a17c71dd…`, payload `79ac3a10…` (14/14 contract) and BOOT image
+  `45f3bb81…` (18/18 gate, only the ramdisk differs from the hardware-tested
+  `ce4d76e8…` baseline). No flash, boot or device access was performed; a
+  fresh BOOT-only approval, verified protected backups/readbacks and a new
+  one-boot budget remain separately gated. N9.6 then flashed that image
+  BOOT-only to p69 with verified protected backups and full readback
+  `9c5bcf2c…`, and consumed one owner-controlled cold boot. Whole-media
+  discovery succeeded (`whole=1 base=0 size=31268536320
+  content=GUID_partition_scheme writable=0`), confirming the Base correction
+  on hardware, but the comparator stopped at the GUID-scheme lookup before any
+  GPT read (`gpt=0 reason=10 reads=0 samples=0 complete=0`). The owner returned
+  to TWRP and the boot budget is consumed; no partition-completeness or
+  reliability claim is made. The N9.7 host-only analysis traced the cause to
+  registration visibility: the pinned `IOGUIDPartitionScheme` is attached to
+  the whole media with its `UUID` property but never calls
+  `registerService()`, so `getMatchingServices(kIOServiceMatchedState)`
+  cannot see it. The pinned `IOMedia::handleOpen()` admits a second reader, so
+  the alternative whole-media open refusal is not supported. The host seam now
+  models registration state and pins the hardware signature with
+  `partcmp-scheme-unregistered` plus absent/missing-`UUID`/wrong-provider/
+  duplicate and reader-open-refusal controls; the block suite passes 48 core
+  scenarios/38 mutation controls and 93 adapter scenarios/16 adapter and
+  eight policy mutation controls. No driver correction, candidate build,
+  ABI/QEMU audit, flash, boot, retry, reset/repair, commit or push was
+  performed. The owner then approved the host-only correction: `findGuidScheme()`
+  now enumerates the selected whole media's direct service-plane children
+  (`whole->getChildIterator(gIOServicePlane)`) instead of matched services,
+  keeping the direct-provider, `UUID` and exactly-one guards and the discovery
+  wait. The class guard now matches the registered class by name with
+  `metaCast("IOGUIDPartitionScheme")`; a direct `OSDynamicCast` failed the
+  kernel link because the pinned metaclass is not exported. The seam now
+  tracks children and an attached-but-unregistered `IOGUIDPartitionScheme`;
+  `partcmp-scheme-unregistered` is inverted to require the full successful
+  comparison, a new `partcmp-scheme-wrong-class` control keeps the class guard,
+  and the class-guard and exactly-one mutation controls reject their targeted
+  regressions. The block suite passes 48 core scenarios/38 mutation controls
+  and 94 adapter scenarios/18 adapter and eight policy mutation controls.
+  The host-only production chain then built prelinked kernel `06826fc5…`,
+  candidate audit `out/gta4l/storage-abi-06826fc5`, requalified archive
+  `6a6af596…`, packaged kernel `61b9cea0…`, payload `79c83d67…` (14/14
+  contract) and BOOT image `74a4c687…` (18/18 gate, only the ramdisk differs
+  from the hardware-tested `ce4d76e8…` baseline); that production batch
+  performed no flash, boot or device access. N9.7 then flashed the corrected
+  image BOOT-only to p69 with verified protected backups and full readback
+  `aaaf8f03…` (candidate prefix `74a4c687…` plus unchanged tail `a28b4ea2…`;
+  RECOVERY/EFS/sec_efs unchanged), and consumed one owner-controlled cold
+  boot. Whole-media selection and the GUID-scheme lookup succeeded (`whole=1
+  base=0 size=31268536320 content=GUID_partition_scheme writable=0`),
+  confirming the correction on hardware, but the first comparator LBA
+  0/512-byte read failed (`gpt=0 reason=8 reads=1 blocks=1 fails=1 samples=0
+  complete=0`). The report discards the raw `IOReturn` and actual byte count,
+  so the cause is unresolved. The owner returned to TWRP and the boot budget
+  is consumed; no partition-completeness or reliability claim is made and
+  N9.6's `complete=0` is not upgraded. Host-only analysis points to a
+  deterministic driver-pipeline exit: the flashed object's `partmapPmbr` sits
+  at page offset 3,608 in a page-aligned 16 KiB kalloc element, so the
+  advertised `kIOMaximumSegmentCountReadKey=1` lets
+  `IOBreaker::getBreakSize()` compute 488 bytes and `breakUpRequest()` fail
+  with `kIOReturnDMAError` before the adapter is entered; physical adjacency
+  of the two pages is not host-observable and allocation failure remains an
+  unselected alternative. No retry, reset/repair, commit or push was
+  performed. The follow-up host-only read-detail batch then added bounded
+  capture of the comparator read outcome without changing transport policy:
+  the report now carries the attempted LBA/blocks/bytes, the raw signed
+  `IOReturn`, the returned byte count and the descriptor length/direction,
+  and every `PARTMAP` report gains a `GTA4L-EMMC P5 READDETAIL:` line. Host
+  scenarios pin descriptor-allocation and open refusal (`state=0`), error
+  (`state=2`), short (`state=3`), in-flight (`state=1`) and full (`state=4`)
+  outcomes, and five adapter mutation controls reject dropped detail. The
+  block suite passes 48 core scenarios/38 mutation controls and 97 adapter
+  scenarios with 23 adapter and eight policy mutation controls. N9.8 then
+  produced the host-only read-detail candidate through the
+  archive/prelink/audit/payload/BOOT flow: prelinked kernel `2777bfce…`,
+  candidate audit `out/gta4l/storage-abi-2777bfce`, requalified archive
+  `4a811585…`, packaged kernel `525fdaa4…`, payload `8d57eb3d…` (14/14
+  contract) and BOOT image `1e767155…` (18/18 gate, only the ramdisk differs
+  from the hardware-tested `ce4d76e8…` baseline); that production batch
+  performed no flash, boot or device access. The hardware `reason=8` cause
+  remains unresolved, the page-straddle hypothesis and allocation failure
+  stay unselected, and N9.6/N9.7 `complete=0` are not upgraded. The owner then
+  approved the host-only N9.9 correction: comparator reads are issued from
+  one page-aligned `IOMallocAligned(size, PAGE_SIZE)` bounce buffer and
+  copied to the caller only after a full successful transfer, with the
+  advertised one-segment and request limits and the `READDETAIL` line
+  unchanged. The host seam models the worst-case `breakUpRequest()` constraint
+  and the block suite passes 48 core scenarios/38 mutation controls and 99
+  adapter scenarios with 24 adapter and eight policy mutation controls. N9.10
+  then produced the corrected candidate through the same flow: prelinked
+  kernel `fcc61714…`, candidate audit `out/gta4l/storage-abi-fcc61714`,
+  requalified archive `0575c413…`, packaged kernel `149b1e6c…`, payload
+  `800d293d…` (14/14 contract) and BOOT image `dc79fab2…` (18/18 gate, only
+  the ramdisk differs from the `ce4d76e8…` baseline). The separately approved
+  BOOT-only flash and one owner-controlled cold boot then returned the first
+  hardware `complete=1`: the real whole media and attached GUID scheme were
+  selected, both GPT copies validated and agreed, all 80 media tuples matched
+  the 80 used entries, the set was stable for 250 ms, and all 25 comparator
+  reads/45 blocks succeeded. This is a same-boot completeness observation, not
+  a reliability result. The owner later reported three additional cold boots
+  and three warm boots on the same unchanged image, all showing `complete=1`
+  without captures; that owner-reported repeatability series is recorded in
+  `docs/emmc-n9.11-reliability-observation-2026-11-08.md`. The host-only
+  protocol proposal is
+  [docs/emmc-n9.11-reliability-protocol-2026-11-08.md](docs/emmc-n9.11-reliability-protocol-2026-11-08.md)
+  (not fully followed). N10.1 then added the orthogonal host-only read-only
+  content qualification: `gta4l-emmc-partread=1` requires exactly one block
+  token 1/3 with value 1 and refuses duplicates, orphans, wrong values and
+  partobs/partcmp combinations; the mode opens the whole media and the pinned
+  boot partition, performs six fixed-range reads (whole LBA 0/34 blocks, whole
+  last 34 blocks, boot 64/3/2/1-block tails) through one page-aligned 32 KiB
+  `IOMallocAligned` bounce buffer, and compares the first 16 bytes of a
+  portable SHA-256 against digests pinned from retained evidence, latching the
+  first failure and reporting `complete=1` only when all six cases pass. The
+  candidate chain built prelinked kernel `12e00d9f…`, candidate audit
+  `out/gta4l/storage-abi-12e00d9f`, requalified archive `5a59d055…`, packaged
+  kernel `05fde642…`, payload `e2dc899d…` (18/18 contract) and BOOT image
+  `0cee22c9…` (18/18 gate, only the ramdisk differs from the `ce4d76e8…`
+  baseline); the block suite passes 48 core scenarios/38 mutation controls and
+  114 adapter scenarios with 33 adapter and eight policy mutation controls. The
+  separately approved BOOT-only flash and one owner-reported cold boot then
+  completed all six pinned reads (`cases=6 passed=6 failed=0 reason=0
+  complete=1 reads=6 blocks=138 bytes=70656 media=0 part=0`), and an
+  independent read-only post-boot comparison confirmed the stored BOOT,
+  unchanged RECOVERY/EFS/sec_efs and both pulled-byte gates (18/18 each). This
+  qualifies only the six pinned ranges on that one boot; the boot budget is
+  consumed and no retry, reflash or repair is authorized. The owner then
+  approved the captured repeatability protocol
+  [docs/emmc-n10.1-partread-repeatability-protocol-2026-11-08.md](docs/emmc-n10.1-partread-repeatability-protocol-2026-11-08.md)
+  with three additional cold boots; observations 2-4 were all class D with the
+  same six-of-six `complete=1` signature, so four captured cold boots on the
+  unchanged image show descriptive repeatability only, not initialization
+  reliability. N10.2 then expanded the same opt-in read-only qualification
+  from six to fourteen pinned cases without changing the protocol: PMBR-only,
+  primary GPT header, primary and backup arrays, LBA 34, the last sector, and
+  two kernel-section ranges at 4 KiB and 1 MiB inside the gate-pinned
+  1,798,052-byte boot kernel section, in addition to the whole-media and
+  boot-tail cases. The host-only candidate chain built prelinked kernel
+  `e7a1982b…`, candidate audit `out/gta4l/storage-abi-e7a1982b`, requalified
+  archive `2ea638ef…`, packaged kernel `d987c350…`, payload `462870cd…`
+  (18/18 contract) and BOOT image `ca1789f0…` (18/18 gate, only the ramdisk
+  differs from the `ce4d76e8…` baseline); the block suite passes 48 core
+  scenarios/38 mutation controls and 114 adapter scenarios with 33 adapter
+  and eight policy mutation controls. The separately approved BOOT-only flash
+  and one owner-reported cold boot then completed all fourteen pinned reads
+  (`cases=14 passed=14 failed=0 reason=0 complete=1 reads=14 blocks=334
+  bytes=171008 media=0 part=0`), and an independent read-only post-boot
+  comparison confirmed the stored BOOT, unchanged RECOVERY/EFS/sec_efs and
+  both pulled-byte gates (18/18 each). This qualifies only the fourteen pinned
+  ranges on that one boot; the boot budget is consumed and no retry, reflash
+  or repair is authorized. N10.4 then implemented the owner-approved host-only
+  unaligned deblock qualification: `gta4l-emmc-deblock=1` requires exactly one
+  block token 1/3 and refuses duplicates, orphans, non-1 values and every
+  partobs/partcmp/partread combination; the mode advertises three read
+  segments only for itself and performs eleven pinned unaligned reads
+  (head-only, tail-only, both ends in one block, both ends across two blocks
+  and a 32-block span, aligned controls, and boot-base
+  head-only/same-block/64-block-tail/same-block-at-media-end cases) through
+  the real `IOMedia::read()`/`IOBlockStorageDriver`/`IODeblocker` path with
+  one page-aligned 33,792-byte bounce buffer and first-16-byte SHA-256 digest
+  checks. The host model reconstructs the deblocker; it does not run the real
+  family code. The expected full-pass line is `cases=11 passed=11 failed=0
+  reason=0 complete=1 reads=11 bytes=54364 span=56832 blocks=111 fails=0
+  cancel=0 budget=0 media=0 part=0 seg=3 cap=61071360`, and the block suite
+  passes 48 core scenarios/38 mutation controls and 143 adapter scenarios
+  with 45 adapter, three support and eight policy mutation controls;
+  diagnostic payload 34 checks and packager self-test 13 checks also pass.
+  N10.5 then produced the host-only candidate chain without device access:
+  prelinked kernel `b2837a5b…`, candidate audit
+  `out/gta4l/storage-abi-b2837a5b`, requalified archive `f3789061…`,
+  packaged kernel `00615136…`, payload `924c7bbd…` (23/23 contract) and BOOT
+  image `bacc933f…` (18/18 gate, only the ramdisk differs from the
+  `ce4d76e8…` baseline); the host suites re-passed (block 48 core
+  scenarios/38 mutation controls, 143 adapter scenarios with 48
+  adapter/support and eight policy mutation controls, core 187/115, probe
+  196/100, payload 34, packager 13, storage-ABI, evidence-count, fixture
+  recipe, board and TOML checks).
+  N10.5 performed no flash, boot or device access. The separately approved
+  N10.6 BOOT-only flash of the N10.5 image `bacc933f…` and one owner-reported
+  cold boot then completed all eleven pinned unaligned reads (`cases=11
+  passed=11 failed=0 reason=0 complete=1 reads=11 bytes=54364 span=56832
+  blocks=111 fails=0 cancel=0 budget=0 media=0 part=0 seg=3 cap=61071360`),
+  with the final case digest `b50aab9d…aa959774` matching the pinned value.
+  The whole-boot counters show a 24-block maximum subrequest (three 4 KiB
+  physical segments), so the real `IOBreaker`/`breakUpRequest()` split path
+  was entered rather than the direct `executeRequest()` short-circuit. No
+  post-boot readback was taken; the report is bound through the pre-boot
+  post-flash readback and the pinned digest. This qualifies only those eleven
+  ranges and the deblock/breakup path on that one boot; the boot budget is
+  consumed and no retry, reflash or repair is authorized. Initialization
+  reliability remains `[U]`.
+  N10.7 then designed the owner-approved deterministic breakup qualification:
+  the opt-in `gta4l-emmc-breakup=1` token requires exactly one block token
+  1/3 and refuses duplicates, orphans, non-1 values and every
+  partobs/partcmp/partread/deblock combination; the mode-scoped advertisement
+  is eight read blocks (4,096 bytes) and three segments, and four pinned
+  boot-partition cases exercise the direct short-circuit, an exact 16-stage
+  split, a 15-stage split with a 7-block final stage and an unaligned split
+  through the deblocker. N10.8 then implemented the host-only mode without a
+  candidate build or device access: a page-aligned 65,536-byte bounce buffer,
+  a bounded tag/range observer that records each driver-level subrequest
+  without taking the controller gate or retaining the buffer, first-16-byte
+  SHA-256 checks against the pinned digests, and the two `BREAKUP`/
+  `BREAKUPREAD` report lines inside the existing 2,048-byte report. The
+  expected full-pass line is `cases=4 passed=4 failed=0 reason=0 complete=1
+  reads=4 bytes=199680 span=200192 blocks=391 subrequests=49 max=8 foreign=0
+  fails=0 cancel=0 budget=0 media=0 part=0 limit=8 seg=3 cap=61071360`, and
+  the block suite passes 48 core scenarios/38 mutation controls and 178
+  adapter scenarios with 58 adapter, three support and eight policy mutation
+  controls; diagnostic payload 37 checks and packager self-test 14 checks
+  also pass. The host model reconstructs the breaker/deblocker split; it does
+  not run the real family code. N10.9 then produced the host-only candidate
+  chain without device access: prelinked kernel `71828829…`, candidate audit
+  `out/gta4l/storage-abi-71828829`, requalified archive `8e636a01…`,
+  packaged kernel `a8a5a609…`, payload `706cfd53…` (29/29 contract) and BOOT
+  image `a8f4a54b…` (18/18 gate, only the ramdisk differs from the
+  `ce4d76e8…` baseline); the host suites re-passed (block 48 core
+  scenarios/38 mutation controls, 178 adapter scenarios with 58
+  adapter/support and eight policy mutation controls, core 187/115, probe
+  196/100, payload 37, packager 14, storage-ABI, evidence-count, fixture
+  recipe, board and TOML checks). N10.9 performed no flash, boot or device
+  access. The separately approved N10.10 BOOT-only flash of the N10.9 image
+  `a8f4a54b…` and one owner-reported cold boot then completed all four pinned
+  breakup cases (`cases=4 passed=4 failed=0 reason=0 complete=1 reads=4
+  bytes=199680 span=200192 blocks=391 subrequests=49 max=8 foreign=0 fails=0
+  cancel=0 budget=0 media=0 part=0 limit=8 seg=3 cap=61071360`), with the
+  final case digest `bc0b9bb9…26db17` matching the pinned value and the
+  `BREAKUPREAD` line printing its first 16 bytes. The whole-boot counters
+  (`DRV reads=58 blocks=420 fails=0 max=8`, `XFER req=420 c17=8 c18=206
+  c18b=412 stops=206 sfail=0`) show an eight-block maximum subrequest, the
+  mode-scoped cap, and 49 driver-level subrequests across the four cases, so
+  the real `IOBreaker`/`breakUpRequest()` split path was entered rather than
+  the direct `executeRequest()` short-circuit. No post-boot readback was
+  taken; the report is bound through the pre-boot post-flash readback and the
+  pinned digest. This qualifies only those four ranges and the breakup path on
+  that one boot; the boot budget is consumed and no retry, reflash or repair
+  is authorized. Initialization reliability remains `[U]`.
+  N10.11 then designed the owner-approved bounded aligned read sweep: the
+  opt-in `gta4l-emmc-sweep=1` token requires exactly one block token 1/3 and
+  refuses duplicates, orphans, non-1 values and every
+  partobs/partcmp/partread/deblock/breakup combination; the mode-scoped
+  advertisement is eight read blocks (4,096 bytes) and one segment, and six
+  cases — two pinned boot anchors and four runtime-derived windows — compare a
+  media-path read against a direct per-block CMD17 reference. N10.12 then
+  implemented the host-only mode without a candidate build or device access:
+  two page-aligned 16,384-byte buffers, a bounded tag/range observer, a
+  first-16-byte SHA-256 anchor check and the two `SWEEP`/`SWEEPREAD` report
+  lines inside the existing 2,048-byte report. The expected full-pass line is
+  `cases=6 passed=6 failed=0 reason=0 complete=1 reads=6 bytes=53248
+  span=53248 blocks=104 subrequests=13 max=8 foreign=0 fails=0 cancel=0
+  budget=0 media=0 part=0 refs=6 refbytes=53248 anchor=1 mismatches=0 limit=8
+  seg=1 cap=61071360`, and the block suite passes 48 core scenarios/38
+  mutation controls and 218 adapter scenarios with 71 adapter, three support
+  and eight policy mutation controls; diagnostic payload 40 checks and
+  packager self-test 15 checks also pass. The host model reconstructs the
+  media/breaker path; it does not run the real family code. N10.13 then
+  produced the host-only sweep candidate: prelinked kernel `64bab406`
+  (51363840 bytes; plan `cd402f0e`), candidate audit
+  `out/gta4l/storage-abi-64bab406` (gdb-stop `227fec6d`, interface-audit
+  `bbd49581`, provenance `50d546bf`, run `e8f1b9d2`; 190 slots, 181
+  bindings, 26 overrides, 0 unresolved imports, `runtime_qualified=false`),
+  requalified archive `14f40fa8` with byte-identical members, packaged
+  kernel `f1ab2b1d`, payload `62371bfb` (83886080 bytes, manifest
+  `e39debae`, gate `20e23cee`, 36/36 contract, `emmc-block-3-sweep` to
+  `gta4l-emmc-block=3 gta4l-emmc-sweep=1` with the fs-timer-hold fixture)
+  and BOOT image `b626a1fa` (85688320 bytes, manifest `a43d16e3`, gate
+  `1b43740a`, 18/18, only the ramdisk differs from the `ce4d76e8` v5
+  baseline). Both anchor digests were re-verified against the v5 image and
+  the host suites re-passed. The separately approved N10.14 BOOT-only flash
+  of `b626a1fa` and one owner-reported first cold boot then completed all
+  six sweep cases (`cases=6 passed=6 failed=0 reason=0 complete=1 reads=6
+  bytes=53248 span=53248 blocks=104 subrequests=13 max=8 foreign=0 fails=0
+  cancel=0 budget=0 media=0 part=0 refs=6 refbytes=53248 anchor=1
+  mismatches=0 limit=8 seg=1 cap=61071360`), with both pinned anchors
+  matching the invariant v5 digests, every direct CMD17 reference agreeing
+  byte-for-byte and the last case printing an equal `digest`/`refdigest`
+  prefix `ccaa1c08dd34df3ca8d4eb3a2b530fdb`. The whole-boot counters (`DRV
+  reads=22 blocks=133 fails=0 max=8`, `XFER req=133 c17=7 c18=63 c18b=126
+  stops=63 sfail=0`) show an eight-block maximum subrequest and 13
+  driver-level case subrequests. No post-boot readback was taken; the
+  report is bound through the pre-boot post-flash readback and the anchor/
+  reference agreement. This qualifies only the two anchors and the four
+  runtime windows on that one boot; the boot budget is consumed and no
+  retry, reflash or repair is authorized. Initialization reliability remains
+  `[U]`.
+  N10.15 then implemented the host-only read-only consumer rung from its
+  design: the opt-in `gta4l-emmc-consume=1` token requires exactly one block
+  token 3 and refuses block 1, duplicates, orphans, non-1 values and every
+  partobs/partcmp/partread/deblock/breakup/sweep combination. A distinct
+  `IOService` client opens the pinned BOOT partition, reads one 1,024-byte
+  window at offset 0 through the production 64-block/32,768-byte/one-segment
+  advertisement from a 32 KiB `IOMallocContiguous` buffer, and records the
+  exact tag/range attribution (`subrequests=1 blocks=2 max=2`). Under option A
+  the observed SHA-256 prefix is printed for an external host comparison and
+  no expected digest is compiled in. The expected success line is
+  `CONSUME: cases=1 passed=1 failed=0 reason=0 complete=1 reads=1 bytes=1024
+  span=1024 blocks=2 subrequests=1 max=2 foreign=0 fails=0 cancel=0 budget=0
+  media=0 part=0 open=1 close=1 alloc=0 client=1 mismatches=0 limit=64 seg=1
+  cap=61071360`; the block suite passes 48 core scenarios/38 mutation
+  controls and 248 adapter scenarios with 95 adapter/support and 10 policy
+  mutation controls, diagnostic payload 42 checks and packager 16 checks
+  pass, and the ABI gate pins the consumer probe's 187 imports against the
+  unchanged N10.13 kernel `64bab406`. The host model reconstructs the
+  client/provider path; it does not run the real family code. The N10.15
+  candidate production then built and gated the consume mode through the
+  archive/prelink/audit/payload/BOOT flow: prelinked kernel `d943c228`
+  (51,437,568 bytes), candidate audit `out/gta4l/storage-abi-d943c228`
+  (190 slots, 181 bindings, 26 concrete overrides, 0 unresolved imports),
+  requalified archive `12d851a8`, packaged kernel `e5ba92e3`, payload
+  `e05eb1cb` (45/45 contract) and BOOT image `777b446c` (85,688,320 bytes,
+  18/18 gate, only the ramdisk differs from the `ce4d76e8` v5 baseline).
+  The external window reference was rebound to the packaged image: full
+  SHA-256 `777b446c…` and first-1,024-byte digest `97479ae8…` (prefix
+  `97479ae876ec6fe6f45b38492b9eb9ac`). The owner accepted the conditional
+  25,000 ms timing margin for the separately approved BOOT-only flash and
+  one cold boot. That flash then wrote p69 only and read back the candidate
+  prefix `777b446c…` plus the unchanged tail `a28b4ea2…` (`6fa2b7e9…` full)
+  with unchanged RECOVERY/EFS/sec_efs, and one owner-reported first cold
+  boot returned `CONSUME: cases=1 passed=1 failed=0 reason=0 complete=1
+  reads=1 bytes=1024 span=1024 blocks=2 subrequests=1 max=2 foreign=0
+  fails=0 cancel=0 budget=0 media=0 part=0 open=1 close=1 alloc=0 client=1
+  mismatches=0 limit=64 seg=1 cap=61071360`; `CONSUMEREAD` printed
+  `digest=97479ae876ec6fe6f45b38492b9eb9ac` with the all-zero option A
+  `expected=` and `mismatch=0`, equal to the external reference, and no
+  `CONSUMEFAIL` appeared. The whole-boot counters (`DRV reads=10 blocks=31
+  fails=0 max=8`, `XFER req=31 c17=7 c18=12 c18b=24 stops=12 sfail=0`) show
+  the case's one two-block CMD18 chunk plus the same 29-block incidental
+  overlay as the earlier boots; `DRV max=8` comes from that overlay, not the
+  case. No post-boot readback was taken; the report is bound through the
+  pre-boot post-flash readback and the external digest. This qualifies only
+  the one 1,024-byte BOOT window on that one boot; the boot budget is
+  consumed and no retry, reflash or repair is authorized. Initialization
+  reliability remains `[U]`. See
+  [docs/emmc-n10.15-consume-hardware-run-2026-11-10.md](docs/emmc-n10.15-consume-hardware-run-2026-11-10.md),
+  [docs/emmc-n10.15-consume-candidate-2026-11-10.md](docs/emmc-n10.15-consume-candidate-2026-11-10.md),
+  [docs/emmc-n10.15-read-only-consumer-design-2026-11-10.md](docs/emmc-n10.15-read-only-consumer-design-2026-11-10.md),
+  [docs/emmc-n10.14-sweep-hardware-run-2026-11-10.md](docs/emmc-n10.14-sweep-hardware-run-2026-11-10.md),
+  [docs/emmc-n10.13-sweep-candidate-2026-11-09.md](docs/emmc-n10.13-sweep-candidate-2026-11-09.md),
+  [docs/emmc-n10.11-bounded-read-sweep-design-2026-11-09.md](docs/emmc-n10.11-bounded-read-sweep-design-2026-11-09.md),
+  [docs/emmc-n10.10-breakup-hardware-result-2026-11-09.md](docs/emmc-n10.10-breakup-hardware-result-2026-11-09.md),
+  [docs/emmc-n10.9-breakup-candidate-2026-11-09.md](docs/emmc-n10.9-breakup-candidate-2026-11-09.md),
+  [docs/emmc-n10.7-breakup-qualification-design-2026-11-09.md](docs/emmc-n10.7-breakup-qualification-design-2026-11-09.md),
+  [docs/emmc-n10.6-deblock-hardware-result-2026-11-08.md](docs/emmc-n10.6-deblock-hardware-result-2026-11-08.md),
+  [docs/emmc-n10.5-deblock-candidate-2026-11-08.md](docs/emmc-n10.5-deblock-candidate-2026-11-08.md),
+  [docs/emmc-n10.3-deblock-qualification-design-2026-11-08.md](docs/emmc-n10.3-deblock-qualification-design-2026-11-08.md),
+  [docs/emmc-n10.2-partread-hardware-result-2026-11-08.md](docs/emmc-n10.2-partread-hardware-result-2026-11-08.md),
+  [docs/emmc-n10.2-partread-candidate-2026-11-08.md](docs/emmc-n10.2-partread-candidate-2026-11-08.md),
+  [docs/emmc-n10.1-partread-repeatability-observation-2026-11-08.md](docs/emmc-n10.1-partread-repeatability-observation-2026-11-08.md),
+  [docs/emmc-n10.1-partread-hardware-result-2026-11-08.md](docs/emmc-n10.1-partread-hardware-result-2026-11-08.md),
+  [docs/emmc-n10.1-partread-candidate-2026-11-08.md](docs/emmc-n10.1-partread-candidate-2026-11-08.md),
+  [docs/emmc-n9.11-reliability-observation-2026-11-08.md](docs/emmc-n9.11-reliability-observation-2026-11-08.md),
+  [docs/emmc-n9.10-partcmp-observation-2026-11-08.md](docs/emmc-n9.10-partcmp-observation-2026-11-08.md),
+  [docs/emmc-n9.10-partcmp-page-aligned-candidate-2026-11-08.md](docs/emmc-n9.10-partcmp-page-aligned-candidate-2026-11-08.md),
+  [docs/emmc-n9.9-page-aligned-comparator-buffer-2026-11-08.md](docs/emmc-n9.9-page-aligned-comparator-buffer-2026-11-08.md),
+  [docs/emmc-n9.8-partcmp-readdetail-candidate-2026-11-08.md](docs/emmc-n9.8-partcmp-readdetail-candidate-2026-11-08.md),
+  [docs/emmc-n9.7-partcmp-observation-2026-11-07.md](docs/emmc-n9.7-partcmp-observation-2026-11-07.md)
+  and [docs/emmc-driver.md](docs/emmc-driver.md) §5.3.66-§5.3.92,
+  [docs/emmc-n9.6-partcmp-observation-2026-11-07.md](docs/emmc-n9.6-partcmp-observation-2026-11-07.md)
+  and [docs/emmc-driver.md](docs/emmc-driver.md) §5.3.62-§5.3.65,
+  [docs/emmc-n9.4-partcmp-observation-2026-11-07.md](docs/emmc-n9.4-partcmp-observation-2026-11-07.md),
+  [docs/emmc-n9.5-partcmp-candidate-2026-11-07.md](docs/emmc-n9.5-partcmp-candidate-2026-11-07.md)
+  and [docs/emmc-driver.md](docs/emmc-driver.md) §5.3.59-§5.3.61.
+  See [docs/emmc-driver.md](docs/emmc-driver.md),
+  [docs/gta4l-storage-publication-design.md](docs/gta4l-storage-publication-design.md),
+  [docs/emmc-cmd2-crc-audit.md](docs/emmc-cmd2-crc-audit.md),
+  [docs/emmc-cmd1-gap-candidate.md](docs/emmc-cmd1-gap-candidate.md) and
+  [docs/emmc-cmd7-timeout-finding.md](docs/emmc-cmd7-timeout-finding.md).
+  N10.16 then completed the host-only M3 readiness audit for a staged 4-bit
+  SDR read through the published storage path at the existing 400 kHz. The
+  audit maps the H15-H17 verified width-switch/recovery helpers onto the
+  production block driver, fixes the insertion point after
+  `initializeHardware()` returns and before the baseline read/publication,
+  keeps the 64-block/32,768-byte/one-segment advertisement and the legacy
+  1-bit path unchanged, and the follow-on host-only batch implements the
+  opt-in `gta4l-emmc-width=4` mode that requires block token 3, reads the
+  pinned BOOT window as the 1-bit reference, switches to 4-bit, re-reads the
+  same window through the published path, verifies the read-only EXT_CSD
+  properties and host `HOST_CONTROL` readback (never byte-183 equality),
+  reverts to 1-bit and
+  reports `WIDTH`/`WIDTHREAD`/`WIDTHFAIL` lines inside the 2,048-byte report.
+  The host batch passes the block, core, probe, packaging and evidence-count
+  suites, including the `emmc-block-3-width4` diagnostic personality. The
+  gate-fix host-only candidate then produced kernel `2be2eb06…`, payload
+  `10ff7ee8…` and BOOT `58352cd3…`, and bound the width report to the final
+  image's first 1,024 bytes (`a6da82e3…`). Candidate ABI/archive, payload and
+  BOOT gates pass. A pre-hardware review found an unbounded report gate wait
+  under a slow 64-block in-flight request; the gate-fix candidate bounds it
+  at 2,000 ms. The 26,230 ms success bound still contains a conditional
+  13,010 ms pre-watchdog path. The owner-approved one-boot run executed on
+  2026-11-11: the driver's terminal guard reported `complete=1` with the
+  verified 4-bit switch, two matching 1,024-byte reads and the verified
+  return to 1-bit; the WIDTHREAD digest matched the image. The pre-flash BOOT
+  image was restored and verified. This is a bounded single-boot result, not
+  a publication or reliability result. Cold-boot identification reliability,
+  repeatability and failure rates remain `[U]`, and no 4-bit publication
+  result exists yet. See
+  [docs/emmc-n10.16-4bit-sdr-readiness-2026-11-10.md](docs/emmc-n10.16-4bit-sdr-readiness-2026-11-10.md),
+  [docs/emmc-n10.16-width4-hardware-observation-2026-11-11.md](docs/emmc-n10.16-width4-hardware-observation-2026-11-11.md),
+  [docs/emmc-n10.16-width4-gatefix-candidate-2026-11-11.md](docs/emmc-n10.16-width4-gatefix-candidate-2026-11-11.md),
+  [docs/emmc-n10.16-prehardware-review-2026-11-11.md](docs/emmc-n10.16-prehardware-review-2026-11-11.md)
+  and
+  [docs/emmc-n10.16-width4-hardware-protocol-2026-11-11.md](docs/emmc-n10.16-width4-hardware-protocol-2026-11-11.md).
+  N10.17 then designed and N10.18 implemented the opt-in
+  `gta4l-emmc-widthhold=1` sustained-width mode: block=3 only, a 1-bit
+  EXT_CSD and 8-block/4,096-byte reference, the verified 4-bit switch, four
+  tagged two-block BOOT reads at offsets 0, 1,024, 2,048 and 3,072 bytes with
+  byte comparison, a verified 1-bit revert on every post-switch exit, and one
+  `WIDTHHOLD` summary plus one `WIDTHHOLDREAD` (or one `WIDTHHOLDFAIL`) line.
+  The host-only N10.19 candidate produced kernel `23e3b6d90f4a…`, payload
+  `bd112387…` (66/66) and BOOT `7f5455d6…` (18/18, only the ramdisk differs),
+  and the widthhold verifier binds the report to the final image's first
+  4,096 bytes and last 1,024-byte slice. The 27,720 ms report bound leaves
+  2,280 ms under the 30,000 ms watchdog, with a conditional pre-watchdog path.
+  No widthhold hardware result exists, the N10.16 one-boot budget stays
+  consumed, and a hardware run is separately gated. See
+  [docs/emmc-n10.17-sustained-width-read-design-2026-11-11.md](docs/emmc-n10.17-sustained-width-read-design-2026-11-11.md)
+  and
+  [docs/emmc-n10.19-widthhold-candidate-2026-11-11.md](docs/emmc-n10.19-widthhold-candidate-2026-11-11.md).
 - QEMU AppleImage4/AMFI findings are in `docs/qemu.md` and are cross-port
   input requirements, not gta4l hardware evidence.
 
@@ -55,6 +1044,19 @@ register and command code is not transferable. The host-only static audit in
 [docs/native-emmc-reference-audit.md](docs/native-emmc-reference-audit.md)
 records the reusable publication patterns, the MediaTek-specific parts and the
 completion/error-path findings. No code is imported.
+
+## PixelExperience reference
+
+The PixelExperience Plus 11 (Android 11) release for `gta4l`/SM-T505 by
+[dolbaras](https://github.com/dolbaras/gta4l-gta4lwifi-roms) is a reference for
+the vendor storage stack, not for XNU. Its release payload and pinned source
+anchors are compared in
+[docs/pe-storage-stack-provenance.md](docs/pe-storage-stack-provenance.md):
+the artifact digest matches the published release metadata, the boot board name
+matches the pinned device configuration, the QRD overlay's `sdhci@4744000`
+node matches the live FDT, and the inspected vendor source sends CMD7 as R1
+rather than the port's R1B. Exact source-to-artifact identity is unresolved,
+only the SM-T505 build was device-tested, and no code or quirk is imported.
 
 ## Inputs
 
@@ -87,6 +1089,15 @@ From the shared UniXNU checkout:
 ./unixnu build payload --unique-chip-id <hex> -D ../UniXNU-gta4l
 ./unixnu bootimg -D ../UniXNU-gta4l
 ```
+
+The canonical one-command flow is `scripts/package.sh` (a verbatim copy of
+UniXNU's `templates/package.sh`); it runs `unixnu release` with the board's
+`[package]` values and the boot DTB staged by the firmware preflight. The
+board's 192 MiB packed payload produces a boot image larger than the
+100,663,296-byte BOOT partition, so the release verify step refuses it. That is
+expected: the release artifact is not the current safe diagnostic image. See
+[docs/upstream-packaging.md](docs/upstream-packaging.md) and
+[docs/boot-dtb-provenance.md](docs/boot-dtb-provenance.md).
 
 For a raw RAM-root diagnostic payload, use the explicit builder instead of
 editing `board.toml`:
