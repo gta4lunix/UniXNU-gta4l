@@ -7,6 +7,7 @@ transport, runs every scenario, checks the source policy, and rejects a set
 of source mutations that remove one safety check or counter each. It never
 touches a device, IOKit or real MMIO.
 """
+import json
 import re
 import shutil
 import subprocess
@@ -32,6 +33,10 @@ PERSONALITY_HELPER = UNIXNU / 'scripts' / 'xnu-native-personality.sh'
 DEFCONFIG = ROOT / 'configs' / 'gta4l_defconfig'
 PATCH_SERIES = ROOT / 'patches' / 'xnu' / 'series'
 PERSONALITY_PATCH = ROOT / 'patches' / 'xnu' / 'gta4l-emmc-block.patch'
+VERIFY_FIXTURES = ROOT / 'scripts' / 'build-gta4l-verify-fixtures.py'
+VERIFY_HARNESS = SIM / 'verify_harness.cpp'
+VERIFY_PROVIDER = SIM / 'verify_provider.c'
+VERIFIED_ROOT_KIT = UNIXNU / 'kits' / 'VerifiedRoot'
 
 FORBIDDEN = [
     'gta4l_emmc_read_block',
@@ -1731,7 +1736,23 @@ ADAPTER_MUTATIONS = [
        '\t\t\treturn GTA4L_EMMC_ERR_ADMA;\n')],
      'dma-stack-fallback'),
     ('windows-short-read-accept',
-     [('\treturn (status == kIOReturnSuccess) && (actual == bytes);\n',
+     [('\tstatus = media->read(this, offset, descriptor, nullptr, &actual);\n'
+       '\tdescriptor->release();\n'
+       '\tif (statusOut != nullptr) {\n'
+       '\t\t*statusOut = status;\n'
+       '\t}\n'
+       '\tif (actualOut != nullptr) {\n'
+       '\t\t*actualOut = actual;\n'
+       '\t}\n'
+       '\treturn (status == kIOReturnSuccess) && (actual == bytes);\n',
+       '\tstatus = media->read(this, offset, descriptor, nullptr, &actual);\n'
+       '\tdescriptor->release();\n'
+       '\tif (statusOut != nullptr) {\n'
+       '\t\t*statusOut = status;\n'
+       '\t}\n'
+       '\tif (actualOut != nullptr) {\n'
+       '\t\t*actualOut = actual;\n'
+       '\t}\n'
        '\treturn (status == kIOReturnSuccess);\n')],
      'windows-short-read'),
     ('windows-window-accept',
@@ -2211,8 +2232,10 @@ POLICY_MUTATIONS = [
        '\t\tgta4l_emmc_block_put_hex(&writer, report->speed_hispd, 1u);\n')],
      'speed-match-8bit'),
     ('speed-formatter-part-line',
-     [('\t} else if ((report->widthhold == 0) && (report->speed == 0)) {\n',
-       '\t} else if (report->widthhold == 0) {\n')],
+     [('\t} else if ((report->widthhold == 0) && (report->speed == 0) &&\n'
+       '\t    (report->vread == 0u)) {\n',
+       '\t} else if ((report->widthhold == 0) &&\n'
+       '\t    (report->vread == 0u)) {\n')],
      'speed-match-8bit'),
     ('speed-formatter-read-line',
      [('\tif ((report->consume == 0) && (report->width == 0) &&\n'
@@ -2312,6 +2335,149 @@ POLICY_MUTATIONS = [
     ('windows-plan-order',
      [('\torder[0] = system;\n', '\torder[0] = os;\n')],
      'windows-publish'),
+]
+
+VERIFY_MUTATIONS = [
+    ('group-one-span',
+     [('\tgroupBytes = (uint32_t)(groupEnd - groupStart);\n',
+       '\tgroupBytes = (uint32_t)(groupEnd - groupStart);\n'
+       '\tgroupBytes = spans[0].bytes;\n')],
+     'multi-span'),
+    ('skip-verify',
+     [('\t\t\tif (vr_verify_block(&state->view,\n'
+       '\t\t\t    spans[index].start /\n'
+       '\t\t\t    GTA4L_EMMC_BLOCK_VERIFY_BLOCK_BYTES,\n'
+       '\t\t\t    spanData, spans[index].bytes,\n'
+       '\t\t\t    &vr_xnu_crypto) != VR_OK) {\n',
+       '\t\t\tif (0) {\n')],
+     'read-tamper'),
+    ('wrong-block',
+     [('\t\t\t    spans[index].start /\n'
+       '\t\t\t    GTA4L_EMMC_BLOCK_VERIFY_BLOCK_BYTES,\n'
+       '\t\t\t    spanData, spans[index].bytes,\n',
+       '\t\t\t    (spans[index].start / '
+       'GTA4L_EMMC_BLOCK_VERIFY_BLOCK_BYTES) + 1u,\n'
+       '\t\t\t    spanData, spans[index].bytes,\n')],
+     'load-and-read'),
+    ('drop-offline-latch',
+     [('\t\t\t\tstate->ready = 0u;\n'
+       '\t\t\t\tonline = false;\n',
+       '\t\t\t\t/* latch dropped */\n')],
+     'read-tamper'),
+    ('restore-passthrough',
+     [('\tstate = gta4l_verified_by_label(windowLabel);\n'
+       '\tif (state == nullptr) {\n'
+       '\t\tif (verifyMode || rootMode ||\n'
+       '\t\t    (windowOwner->verifyMode || windowOwner->rootMode)) {\n'
+       '\t\t\t*status = kIOReturnNotPermitted;\n'
+       '\t\t\treturn true;\n'
+       '\t\t}\n'
+       '\t\treturn false;\n'
+       '\t}\n',
+       '\tstate = gta4l_verified_by_label(windowLabel);\n'
+       '\tif (state == nullptr) {\n'
+       '\t\treturn false;\n'
+       '\t}\n'),
+      ('\t\t\tif (verifyMode || rootMode ||\n'
+       '\t\t\t    ((windowOwner != nullptr) &&\n'
+       '\t\t\t    (windowOwner->verifyMode ||\n'
+       '\t\t\t    windowOwner->rootMode))) {\n',
+       '\t\t\tif (0) {\n')],
+     'no-policy-refused'),
+    ('drop-direction',
+     [('\t\tif (buffer->getDirection() == kIODirectionOut) {\n'
+       '\t\t\treturn kIOReturnNotWritable;\n'
+       '\t\t}\n',
+       '\t\tif (0) {\n'
+       '\t\t\treturn kIOReturnNotWritable;\n'
+       '\t\t}\n')],
+     'write-refused'),
+    ('accept-missing-completion',
+     [('\t\t\tif ((result != kIOReturnSuccess) || !record.called ||\n'
+       '\t\t\t    (record.status != kIOReturnSuccess) ||\n'
+       '\t\t\t    (record.actual != groupBytes)) {\n',
+       '\t\t\tif (result != kIOReturnSuccess) {\n')],
+     'completion-skipped'),
+    ('copy-before-verify',
+     [('\t\t\tif (vr_verify_block(&state->view,\n'       '\t\t\t    spans[index].start /\n'
+       '\t\t\t    GTA4L_EMMC_BLOCK_VERIFY_BLOCK_BYTES,\n'
+       '\t\t\t    spanData, spans[index].bytes,\n'
+       '\t\t\t    &vr_xnu_crypto) != VR_OK) {\n',
+       '\t\t\tcopyStart = (start > spans[index].start) ?\n'
+       '\t\t\t    start : spans[index].start;\n'
+       '\t\t\tcopyEnd = (end < spans[index].start + '
+       'spans[index].bytes) ?\n'
+       '\t\t\t    end : spans[index].start + spans[index].bytes;\n'
+       '\t\t\t(void)buffer->writeBytes((IOByteCount)(copyStart - start),\n'
+       '\t\t\t    spanData + (copyStart - spans[index].start),\n'
+       '\t\t\t    (IOByteCount)(copyEnd - copyStart));\n'
+       '\t\t\tif (vr_verify_block(&state->view,\n'
+       '\t\t\t    spans[index].start /\n'
+       '\t\t\t    GTA4L_EMMC_BLOCK_VERIFY_BLOCK_BYTES,\n'
+       '\t\t\t    spanData, spans[index].bytes,\n'
+       '\t\t\t    &vr_xnu_crypto) != VR_OK) {\n')],
+     'read-tamper'),
+    ('lifetime-no-recovery',
+     [('\t\tretry = windowOwner->speedRecover();\n',
+       '\t\tretry = false;\n')],
+     'lifetime-recover'),
+    ('lifetime-panic-suppressed',
+     [('\tif (elapsedMs < GTA4L_EMMC_BLOCK_ROOT_PANIC_MS) {\n',
+       '\tif (0) {\n')],
+     'lifetime-recover-fail'),
+    ('lifetime-after-mount-panic',
+     [('\tif (gta4l_root_mount_seen) {\n',
+       '\tif (0) {\n')],
+     'lifetime-after-mount'),
+    ('lifetime-recover-mismatch',
+     [('\tif (!verificationMismatch &&\n'
+       '\t    gta4l_lifetime_transport_error(status) &&\n'
+       '\t    (windowOwner->rootRecoveries == 0u)) {\n',
+       '\tif ((gta4l_lifetime_transport_error(status) || 1) &&\n'
+       '\t    (windowOwner->rootRecoveries == 0u)) {\n')],
+     'lifetime-verify-fail'),
+    ('vread-seq-truncate',
+     [('\twhile (position < GTA4L_EMMC_BLOCK_VREAD_SEQ_BYTES) {\n',
+       '\twhile (position < 32768u) {\n')],
+     'vread'),
+    ('vread-write-status',
+     [('\t\t\tif ((status == kIOReturnNotWritable) &&\n',
+       '\t\t\tif ((status == kIOReturnSuccess) &&\n')],
+     'vread'),
+    ('vread-export-accept',
+     [('\tif (exports == 7u) {\n', '\tif (exports == 0u) {\n')],
+     'vread'),
+    ('vread-media-open',
+     [('\tif (!found->open(client, 0, kIOStorageAccessReader)) {\n',
+       '\tif (0 && !found->open(client, 0, kIOStorageAccessReader)) {\n')],
+     'vread'),
+    ('vread-select-synth',
+     [('\t\tif ((parent == nullptr) || (parent->getProvider() != window)) {\n',
+       '\t\tif (((void)parent, false)) {\n')],
+     'vread'),
+    ('vread-drop-size-check',
+     [('\t\t    (size->unsigned64BitValue() != expectedBytes)) {\n',
+       '\t\t    0) {\n')],
+     'vread-whole-size'),
+    ('vread-early-exit',
+     [('\tif (targetsOk == 0u) {\n'
+       '\t\treason = GTA4L_EMMC_BLOCK_VREAD_REASON_MEDIA;\n'
+       '\t} else {\n',
+       '\tif (targetsOk == 0u) {\n'
+       '\t\treason = GTA4L_EMMC_BLOCK_VREAD_REASON_MEDIA;\n'
+       '\t\tgoto done;\n'
+       '\t} else {\n')],
+     'vread-whole-size'),
+    ('vread-drop-writable-report',
+     [('\t\twritable = ((writableProperty != nullptr) &&\n'
+       '\t\t    writableProperty->getValue()) ? 1u : 0u;\n',
+       '\t\twritable = 0u;\n'
+       '\t\t(void)writableProperty;\n')],
+     'vread-whole-writable'),
+    ('vread-span-count',
+     [('\t\t\tspans += gta4l_vread_spans(osSize, 0u, 4096u);\n',
+       '\t\t\tspans += 0u;\n')],
+     'vread'),
 ]
 
 
@@ -2744,6 +2910,17 @@ def check_adapter_source():
         'a published window must verify every span and latch a mismatch'
     assert 'verifiedWindowRead(buffer, blockNumber, nblks' in adapter, \
         'the window role must route reads through the verified path'
+    assert 'GTA4L_EMMC_BLOCK_HOST_VERIFY' in adapter and \
+        'Gta4lEmmcBlockHostSha384.h' in adapter and \
+        'gta4l_test_owner_read_hook' in adapter, \
+        'the host verify build must use the kit policy and the owner seam'
+    assert 'buffer->getDirection() == kIODirectionOut' in adapter and \
+        'kIOReturnNotWritable' in adapter, \
+        'the window role must refuse writes before any read'
+    assert 'windowOwner->verifyMode' in adapter and \
+        'windowOwner->rootMode' in adapter and \
+        'kIOReturnNotPermitted' in adapter, \
+        'a window without a policy must fail closed when its owner verifies'
     assert 'gta4l_emmc_block_root_select' in policy and \
         'gta4l_emmc_block_root_select(' in adapter and \
         'GTA4L_EMMC_BLOCK_ROOT_ARG' in policy_header, \
@@ -2751,6 +2928,27 @@ def check_adapter_source():
     assert 'GTA4L-EMMC P5 ROOT: online=1 windows=' in adapter and \
         'rootMode && (reason ==' in adapter, \
         'lifetime root success must stay online instead of panicking'
+    assert 'GTA4L_EMMC_BLOCK_VREAD_ARG' in policy_header and \
+        'gta4l_emmc_block_vread_select' in policy and \
+        'gta4l_emmc_block_vread_select(' in adapter and \
+        'GTA4L-EMMC P5 VREAD: ' in policy and \
+        'runVread(pending, &parsed)' in adapter, \
+        'the verified-read report rung must use the shared selector'
+    assert 'GTA4L_EMMC_BLOCK_VREAD_REPORT_WORST_BYTES' in policy_header and \
+        'GTA4L_EMMC_BLOCK_VREAD_CASES' in policy_header and \
+        'kIOReturnNotWritable' in adapter, \
+        'the VREAD line must be bounded and refuse the write case'
+    assert 'gta4l_vread_whole_media' in adapter and \
+        'gta4l_vread_whole_media(' in adapter and \
+        'kIOMediaWholeKey' in adapter and \
+        'whole[index] = gta4l_vread_whole_media' in adapter and \
+        'vread_msize' in adapter and 'vread_mwhole' in adapter and \
+        'vread_case_status' in adapter and 'vread_mdiag' in adapter, \
+        'VREAD must read the window whole media and report its target'
+    assert 'parent->getProvider() != window' in adapter and \
+        'GTA4L_VREAD_TARGET_SIZE' in adapter and \
+        'found->open(client, 0' in adapter, \
+        'the whole media must be the one directly under the window'
     assert 'verify_load_ms' in policy_header and \
         'verify_hash_ms' in policy_header and \
         'verify_open_ms' in policy_header and \
@@ -3072,6 +3270,7 @@ def compile_adapter(compiler, temp):
         policy_objects.append(str(target))
     cxx_common = ['-std=c++17', '-Wall', '-Wextra', '-Werror',
                   '-DGTA4L_EMMC_BLOCK_HOST_TEST',
+                  '-DXNU_OWNER_ROOT_AUDIT=1',
                   '-I', str(ROOT / 'package'), '-I', str(SIM)]
     objects = list(policy_objects)
     for source in (ADAPTER_SUPPORT, ADAPTER_HARNESS):
@@ -3116,6 +3315,7 @@ def compile_adapter_mutation(cxx, temp, name, replacements, scenario, objects,
                  sim / 'Gta4lEmmcBlockTestSupport.h')
     cxx_common = ['-std=c++17', '-Wall', '-Wextra', '-Werror',
                   '-DGTA4L_EMMC_BLOCK_HOST_TEST',
+                  '-DXNU_OWNER_ROOT_AUDIT=1',
                   '-I', str(ROOT / 'package'), '-I', str(sim)]
     local = list(objects)
     for source in (sim / ADAPTER_SUPPORT.name, sim / ADAPTER_HARNESS.name):
@@ -3160,6 +3360,7 @@ def compile_policy_mutation(compiler, cxx, temp, name, replacements,
         objects.append(str(target))
     cxx_common = ['-std=c++17', '-Wall', '-Wextra', '-Werror',
                   '-DGTA4L_EMMC_BLOCK_HOST_TEST',
+                  '-DXNU_OWNER_ROOT_AUDIT=1',
                   '-I', str(ROOT / 'package'), '-I', str(SIM)]
     for source in (ADAPTER_SUPPORT, ADAPTER_HARNESS):
         target = temp / f'policy-{name}-{source.stem}.o'
@@ -3279,6 +3480,134 @@ def check_sha_provider(compiler, temp):
     print('PASS mutation sha-provider-corecrypto-ignored rejected')
 
 
+def compile_verify_suite(cxx, compiler, temp, fixture_dir):
+    kit = VERIFIED_ROOT_KIT
+    base = temp / 'verify-base'
+    base.mkdir()
+    policy = base / 'policy.o'
+    core = base / 'core.o'
+    support = base / 'support.o'
+    verified_root = base / 'verified_root.o'
+    provider = base / 'provider.o'
+    harness = base / 'harness.o'
+    common_c = [compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
+                '-DGTA4L_EMMC_BLOCK_HOST_TEST', '-I', str(ROOT / 'package')]
+    common_cxx = [cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                  '-DGTA4L_EMMC_BLOCK_HOST_TEST',
+                  '-DXNU_OWNER_ROOT_AUDIT=1',
+                  '-I', str(ROOT / 'package'),
+                  '-I', str(SIM)]
+    commands = [
+        common_c + ['-c', str(POLICY), '-o', str(policy)],
+        common_c + ['-c', str(CORE), '-o', str(core)],
+        common_cxx + ['-c', str(ADAPTER_SUPPORT), '-o', str(support)],
+        [compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
+         '-I', str(kit / 'include'), '-c', str(kit / 'src' / 'verified_root.c'),
+         '-o', str(verified_root)],
+        [compiler, '-std=c11', '-Wall', '-Wextra', '-Werror',
+         '-I', str(kit / 'include'), '-c', str(VERIFY_PROVIDER),
+         '-o', str(provider)],
+        common_cxx + ['-DGTA4L_EMMC_BLOCK_HOST_VERIFY=1',
+                      '-I', str(fixture_dir / 'policies'),
+                      '-I', str(kit / 'include'),
+                      '-c', str(VERIFY_HARNESS), '-o', str(harness)],
+    ]
+    for command in commands:
+        built = subprocess.run(command, text=True, capture_output=True)
+        assert built.returncode == 0, (
+            'verify build failed:\n' + built.stdout + built.stderr)
+    binary = base / 'verify-test'
+    linked = subprocess.run([cxx, str(policy), str(core), str(support),
+                             str(verified_root), str(provider), str(harness),
+                             '-lcrypto', '-o', str(binary)],
+                            text=True, capture_output=True)
+    assert linked.returncode == 0, (
+        'verify link failed:\n' + linked.stdout + linked.stderr)
+    return binary, dict(policy=policy, core=core, support=support,
+                        verified_root=verified_root, provider=provider)
+
+
+def check_verify_adapter(compiler, cxx, temp):
+    if not Path('/usr/include/openssl/evp.h').is_file():
+        raise AssertionError(
+            'the verified-read host harness needs the OpenSSL development '
+            'headers; install them before running this gate')
+    fixture_dir = temp / 'verify-fixture'
+    generated = subprocess.run([sys.executable, str(VERIFY_FIXTURES),
+                                '--output', str(fixture_dir)],
+                               text=True, capture_output=True)
+    assert generated.returncode == 0, (
+        'verify fixture generation failed:\n' +
+        generated.stdout + generated.stderr)
+    fixture = json.loads((fixture_dir / 'fixture.json').read_text())
+    windows = fixture['windows']
+    args = [fixture['image'],
+            str(windows['OS']['offset']), str(windows['OS']['size']),
+            str(windows['OS']['table_offset']),
+            str(windows['OS']['table_bytes']),
+            str(windows['SystemOS']['offset']),
+            str(windows['SystemOS']['size']),
+            str(windows['SystemOS']['table_offset']),
+            str(windows['SystemOS']['table_bytes'])]
+    binary, objects = compile_verify_suite(cxx, compiler, temp, fixture_dir)
+    run = subprocess.run([str(binary), *args], text=True,
+                         capture_output=True)
+    assert run.returncode == 0, (
+        'verified-read scenarios failed:\n' + run.stdout + run.stderr)
+    assert 'PASS gta4l verified read adapter' in run.stdout, run.stdout
+    passes = run.stdout.count('PASS ')
+    assert passes == 30, f'expected 30 verified-read PASS lines, got {passes}'
+    print('PASS verified-read adapter: 29 scenarios against real runVerify '
+          'and verifiedWindowRead')
+    for name, replacements, scenario in VERIFY_MUTATIONS:
+        mirror = temp / f'verify-{name}'
+        sim = mirror / 'scripts' / 'sim-gta4l-emmc-block'
+        package = mirror / 'package'
+        sim.mkdir(parents=True)
+        package.mkdir(parents=True)
+        adapter = ADAPTER.read_text()
+        for old, replacement in replacements:
+            assert adapter.count(old) == 1, (
+                f'verify mutation {name}: anchor count '
+                f'{adapter.count(old)}')
+            adapter = adapter.replace(old, replacement)
+        (package / ADAPTER.name).write_text(adapter)
+        for source in (VERIFY_HARNESS, SIM / 'Gta4lEmmcBlockTestSupport.h',
+                       SIM / 'Gta4lEmmcBlockHostSha384.h'):
+            shutil.copy2(source, sim / source.name)
+        harness = temp / f'verify-{name}-harness.o'
+        built = subprocess.run(
+            [cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror',
+             '-DGTA4L_EMMC_BLOCK_HOST_TEST', '-DXNU_OWNER_ROOT_AUDIT=1',
+             '-DGTA4L_EMMC_BLOCK_HOST_VERIFY=1',
+             '-I', str(package), '-I', str(ROOT / 'package'), '-I', str(sim),
+             '-I', str(fixture_dir / 'policies'),
+             '-I', str(VERIFIED_ROOT_KIT / 'include'),
+             '-c', str(sim / VERIFY_HARNESS.name), '-o', str(harness)],
+            text=True, capture_output=True)
+        assert built.returncode == 0, (
+            f'verify mutation {name}: compile failed:\n' +
+            built.stdout + built.stderr)
+        mutated_binary = temp / f'verify-{name}-test'
+        linked = subprocess.run(
+            [cxx, str(objects['policy']), str(objects['core']),
+             str(objects['support']), str(objects['verified_root']),
+             str(objects['provider']), str(harness), '-lcrypto',
+             '-o', str(mutated_binary)],
+            text=True, capture_output=True)
+        assert linked.returncode == 0, (
+            f'verify mutation {name}: link failed:\n' +
+            linked.stdout + linked.stderr)
+        run = subprocess.run([str(mutated_binary), *args, scenario],
+                             text=True, capture_output=True)
+        assert run.returncode != 0, (
+            f'verify mutation {name} was accepted ({scenario})')
+        assert f'FAIL {scenario}' in run.stdout, (
+            f'verify mutation {name} did not fail {scenario}:\n' +
+            run.stdout + run.stderr)
+        print(f'PASS verify mutation {name} rejected ({scenario})')
+
+
 def main():
     compiler = shutil.which('gcc') or shutil.which('clang')
     if not compiler:
@@ -3326,8 +3655,8 @@ def main():
             'adapter scenarios failed:\n' + (run.stdout + run.stderr)
         assert 'PASS gta4l eMMC block adapter' in run.stdout, run.stdout
         passes = run.stdout.count('PASS ')
-        assert passes == 526, f'expected 526 adapter PASS lines, got {passes}'
-        print('PASS adapter: 526 scenarios against the host IOKit seam')
+        assert passes == 528, f'expected 528 adapter PASS lines, got {passes}'
+        print('PASS adapter: 528 scenarios against the host IOKit seam')
         check_speed_report_roundtrip(run.stdout, temp)
         cxx = shutil.which('g++') or shutil.which('clang++')
         for name, replacements, scenario in ADAPTER_MUTATIONS:
@@ -3367,6 +3696,7 @@ def main():
                 f'policy mutation {name} did not fail {scenario}:\n' + \
                 (run.stdout + run.stderr)
             print(f'PASS policy mutation {name} rejected ({scenario})')
+        check_verify_adapter(compiler, cxx, temp)
     print(f'PASS gta4l eMMC block core: 47 scenarios, '
           f'{len(MUTATIONS)} mutation controls')
     return 0

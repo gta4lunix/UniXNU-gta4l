@@ -14987,6 +14987,31 @@ screen_windows(struct gta4l_emmc_block_report *report)
 	    sizeof(report->verify_os_sha384));
 	memset(report->verify_systemos_sha384, 0xff,
 	    sizeof(report->verify_systemos_sha384));
+	report->vread = 1u;
+	report->vread_cases = 0xffffffffu;
+	report->vread_passed = 0xffffffffu;
+	report->vread_failed = 0xffffffffu;
+	report->vread_reason = 0xffffffffu;
+	report->vread_mask = 0xffffu;
+	report->vread_windows = 0xffffffffu;
+	report->vread_msize = UINT64_MAX;
+	report->vread_mwhole = 1u;
+	report->vread_case_status = 0xffffffffu;
+	report->vread_mdiag[0] = 0xffffffffu;
+	report->vread_mdiag[1] = 0xffffffffu;
+	report->vread_spans = 0xffffffffu;
+	report->vread_mismatches = 0xffffffffu;
+	report->vread_write = 0xffffffffu;
+	report->vread_exports = 0xffffffffu;
+	report->vread_seq_ms = 0xffffffffu;
+	report->vread_seq_bytes = UINT64_MAX;
+	report->vread_fail_case = 0xffffffffu;
+	report->vread_fail_status = (int32_t)0x80000000u;
+	report->vread_fail_block = UINT64_MAX;
+	report->vread_fail_actual = UINT64_MAX;
+	memset(report->vread_digest, 0xff, sizeof(report->vread_digest));
+	memset(report->vread_seq_digest, 0xff,
+	    sizeof(report->vread_seq_digest));
 }
 
 static uint32_t
@@ -15993,6 +16018,48 @@ scenario_windows_read(void)
 }
 
 static int
+scenario_windows_retain_balance(void)
+{
+	CHECK(begin_with("gta4l-emmc-block=3 gta4l-emmc-windows=1",
+	    speed_fixture) == 0);
+	CHECK(g_started);
+	CHECK(gta4l_test.thread_count == 2);
+	CHECK(g_self->test_retain_count == 2);
+	return 0;
+}
+
+static int
+scenario_windows_write_refused(void)
+{
+	Gta4lEmmcBlock *window;
+	IOMemoryDescriptor *descriptor;
+	IOStorageCompletion completion;
+	IOReturn status;
+
+	CHECK(begin_with("gta4l-emmc-block=3 gta4l-emmc-windows=1",
+	    speed_fixture) == 0);
+	CHECK(g_started);
+	window = new Gta4lEmmcBlock();
+	CHECK(window->configureWindow(g_self, "OS",
+	    GTA4L_EMMC_BLOCK_USERDATA_BASE_BYTES + (1ull << 20),
+	    2ull << 20));
+	CHECK(window->start(g_self));
+	CHECK(window->online);
+	memset(&g_completion, 0, sizeof(g_completion));
+	descriptor = IOMemoryDescriptor::withAddress(g_buffer,
+	    GTA4L_EMMC_BLOCK_BYTES, kIODirectionOut);
+	completion.target = 0;
+	completion.action = completion_action;
+	completion.parameter = 0;
+	status = window->doAsyncReadWrite(descriptor, 0, 1, 0,
+	    &completion);
+	descriptor->release();
+	CHECK(status == kIOReturnNotWritable);
+	CHECK(g_completion.calls == 0);
+	return 0;
+}
+
+static int
 scenario_windows_verify_fail_closed(void)
 {
 	CHECK(begin_with("gta4l-emmc-block=3 gta4l-emmc-windows=1 "
@@ -16375,7 +16442,7 @@ scenario_windows_publish(void)
 		CHECK(blocks != 0 && bytes != 0 && segments != 0);
 		CHECK(blockValue == GTA4L_EMMC_BLOCK_MAX_BLOCKS);
 		CHECK(byteValue == GTA4L_EMMC_BLOCK_MAX_BYTES);
-		CHECK(segmentValue == 1u);
+		CHECK(segmentValue == GTA4L_EMMC_BLOCK_VERIFY_SEGMENTS);
 	}
 	status = issue_device_read(g_windows_device[1], 0, 1, 512);
 	CHECK(status == kIOReturnSuccess);
@@ -17223,6 +17290,8 @@ static const struct scenario_entry scenarios[] = {
 	{ "screen-capacity", scenario_screen_capacity },
 	{ "windows-manifest", scenario_windows_manifest },
 	{ "windows-format", scenario_windows_format },
+	{ "windows-write-refused", scenario_windows_write_refused },
+	{ "windows-retain-balance", scenario_windows_retain_balance },
 	{ "windows-verify-fail-closed", scenario_windows_verify_fail_closed },
 	{ "verify-format", scenario_verify_format },
 	{ "windows-read", scenario_windows_read },

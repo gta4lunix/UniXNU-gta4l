@@ -9766,3 +9766,1688 @@ The new-kernel storage-ABI audit
 `fffffff007b4b5b8`, 190 ordinary slots and 181 kernel bindings. The block
 suite is green (exit=0, 297 PASS lines, adapter 526, core 47/35). No
 candidate, flash, boot or device access.
+
+### 5.4.7 S5d′ verified-read host harness and lifetime errors (2026-11-17, host-only)
+
+The S5d suite compiled the verification path out
+(`GTA4L_EMMC_BLOCK_VERIFY_BUILT=0`), so none of the verified-read,
+lifetime or root-token code had ever executed. S5d′ adds a second host
+build with `-DGTA4L_EMMC_BLOCK_HOST_VERIFY=1`:
+
+- `scripts/build-gta4l-verify-fixtures.py` generates a synthetic
+  SHNGROOT image with a 1 MiB-aligned OS window of 2,097,664 bytes and a
+  SystemOS window of 1,049,088 bytes (both with a partial final 4 KiB
+  span), signs both with a throwaway 3072-bit RSA key under the test
+  output directory, writes the matching
+  `Gta4lEmmcBlockPolicies.h`, and never reads the owner key.
+- `scripts/sim-gta4l-emmc-block/verify_harness.cpp` compiles the real
+  adapter with the kit `verified_root.c` and a host OpenSSL
+  `vr_xnu_crypto`, calls the real `runVerify()` and
+  `verifiedWindowRead()`, and serves the synthetic image through the
+  host IOMedia and owner-read seams.
+- 19 scenarios cover load success, short and failed table reads,
+  tampered tables, wrong anchor, wrong UUID, aligned/unaligned/
+  cross-span/final-partial reads, a tampered span, write refusal before
+  I/O, no-policy refusal, S4 pass-through, a skipped completion, short
+  and failed owner reads, lifetime recovery, the lifetime panic
+  boundary and a sequential-read benchmark. Eleven source mutations
+  (skip verify, wrong block index, copy before verify, drop the offline
+  latch, restore pass-through, drop the direction check, accept a
+  missing completion, and four lifetime controls) are each rejected by
+  a named scenario.
+
+The harness found and the driver now fixes a real fail-open path: the
+window object is a separate `Gta4lEmmcBlock` instance whose own
+`verifyMode`/`rootMode` are false, so a policy-less window originally
+forwarded the read unverified even when the owner was in verify or root
+mode. `verifiedWindowRead` and the window role now consult both the
+window and `windowOwner` modes, refuse with `kIOReturnNotPermitted`,
+check the direction and length before any I/O, and treat a completion
+that did not run or returned a short count as `kIOReturnIOError` rather
+than success.
+
+Lifetime root mode (`gta4l-emmc-root=1`) now has a first-error latch,
+one transport recovery through `speedRecover()` (the existing
+width/timing revert; a verify mismatch is never recovered), one offline
+notification, and a terminal report only while
+`native_verified_block_root_authorized()` has not yet accepted the
+volume and less than 120,000 ms have elapsed since publication
+(`GTA4L_EMMC_BLOCK_ROOT_PANIC_MS`). After the export accepts the volume
+the window is taken offline without panicking.
+
+Host benchmark with the OpenSSL provider (1 MiB sequential, 32 KiB
+requests): 512 verified spans in 1.1-1.4 ms, about 370,000-455,000
+spans/s. That is a SHA-256/memcpy proxy only; the S5d″ rung measures the
+real eMMC cost. The host numbers are far below the measured eMMC
+direct-DMA rate (25.8 MB/s in B10.13), so no verified-span cache is
+added for the first root boot; the decision is recorded again after
+S5d″.
+
+`XNU_OWNER_ROOT_TRUST=1` is not compatible with the `rd=md0` diagnostic
+payload: `bsd_init` takes the owner override only when
+`native_verified_block_root_authorized()` accepts the mounted root
+device, and a RAM root has no verified window state. A diagnostic
+payload with the trust flag on can therefore panic at `rootvp`
+authentication even though the block rung ran. S5d″ must use a kernel
+built with `XNU_OWNER_ROOT_TRUST=0`; S5e remains the first boot with the
+trust flag on. The verified-read code is identical in both builds; the
+S5e-only surface is the root authorization and the mount.
+
+Mount inputs for S5e: `XNU_OWNER_CACHE_MOUNT=1` (requires root trust)
+mounts SystemOS at `/private/preboot` (or the union root),
+`XNU_OWNER_CACHE_STARTUP=1` selects the owner dyld cache, and
+`XNU_OWNER_BOOT_MANIFEST`/`XNU_OWNER_DATA_MOUNT`/`XNU_NATIVE_AIR_INIT`
+stay off until the RAM Data seed and its real volume UUID are known.
+`CONFIG_XNU_OWNER_DATA_VOLUME_UUID` currently carries the OS UUID and
+must not be used for a Data mount. The S5e payload omits `rd=md0` and
+selects the OS window as the root volume.
+
+The S5d′ code change rebuilt the kernel: `c13f9a5a…`
+(51,679,232 bytes) with archive `c8cf0695…` (qualified) and a fresh
+storage-ABI audit `out/gta4l/storage-abi-c13f9a5a` PASS (190 ordinary
+slots, 181 kernel bindings; vtable `fffffff005cb44c0`, metaclass
+`fffffff006add1d0`, service `fffffff007b4b5b8`). The new lifetime methods
+`lifetimeRootFailure`/`lifetimeRootOffline` and the root-mount flag are
+present; `bsd_init.o` still records the probe/audit/trust flags as 1.
+The full suite is green: exit=0, 309 PASS lines, default adapter 527
+scenarios, core 47 scenarios/35 mutation controls, verify build 19
+scenarios and 11 mutation controls (all rejected). No candidate, flash,
+boot or device access.
+
+### 5.4.8 S5d″ verified-read report rung (2026-11-17, host)
+
+`gta4l-emmc-vread=1` selects the S5d″ report rung. It requires
+`gta4l-emmc-block=3`, `gta4l-emmc-windows=1`, `gta4l-emmc-verify=1` and
+`gta4l-emmc-dma=1`, and conflicts with `gta4l-emmc-root=1` and every
+other diagnostic selector. After the S5c′ verification and both window
+publications, `runVread` reads through the published OS and SystemOS
+windows: OS block 0, SystemOS block 0, an unaligned 512-byte read inside
+a span, a 1,024-byte read crossing a span boundary, the OS final
+1,536-byte partial span, and a bounded 4 MiB sequential read in 32 KiB
+requests. It then attempts one write and requires
+`kIOReturnNotWritable` with no completion, and checks the three
+`native_verified_block_*` exports: device path resolution, root
+authorization and the cached envelope SHA-384. The VREAD line carries
+the case count/mask, window count, verified span count (1,030 on the
+production image), mismatch count, write and export results, the
+sequential milliseconds/bytes, the first failure case/status/block/
+actual, and two 16-byte digest prefixes (fixed cases and sequential).
+The line also carries `msize` (the OS whole-media size the reads used),
+`mwhole` (both windows resolved to exactly one whole media of the window
+size) and `vst` (one hex nibble per case). The widest VREAD line is 460
+bytes and the VREAD report shape is 29 panic-screen rows; the line is
+bounded by 512 bytes and the report buffer by 3,584 bytes. The rung suppresses the base DRV/XFER/MEDIA/PART/
+SNAP/FAIL lines when VREAD is selected; WINDOWS and VERIFY remain.
+
+The host verify build runs 23 scenarios and 21 mutations. The VREAD
+scenarios cover the token, every read/write/export case and the whole-
+media target failures (missing, wrong size, duplicate); the VREAD
+mutations cover sequential truncation, a wrong write status, an export
+acceptance bypass, a missing window open, a read retargeted at the APFS
+volume, a dropped whole-media check, a dropped size check, an accepted
+duplicate whole media and a span-count bypass. The host harness also found a real export bug: the
+`native_verified_block_volume_device` path used `sizeof(path)` on a
+pointer parameter instead of the caller's `size`, so any BSD name longer
+than two characters was rejected. It now uses `size` and the host export
+test resolves `/dev/disk0s1`, authorizes the device and reproduces the
+OS envelope digest.
+
+The trust-on kernel (the S5e build) is `ba1ad3ec…` (51,699,712 bytes)
+with archive `5a549151…`, and storage-ABI audit
+`out/gta4l/storage-abi-ba1ad3ec` PASS (190 slots, 181 bindings; service
+`fffffff007b4f5b8`). The S5d″ diagnostic kernel uses
+`configs/gta4l_vread_defconfig`, which turns `XNU_VERIFIED_ROOT_PROBE`,
+`XNU_OWNER_ROOT_AUDIT` and `XNU_OWNER_ROOT_TRUST` off because an
+`rd=md0` RAM root has no verified state. Its kernel hash, archive and
+audit are recorded with the candidate; userdata stays
+`ae6e18e7…`. The diagnostic kernel is `2b39e25c…` (51,695,616
+bytes) with the same archive `5a549151…`; its storage-ABI audit
+`out/gta4l/storage-abi-2b39e25c` is PASS (190 slots, 181 bindings;
+service `fffffff007b4f5b8`), and its `bsd_init.o` records
+`XNU_VERIFIED_ROOT_PROBE=0`, `XNU_OWNER_ROOT_AUDIT=0` and
+`XNU_OWNER_ROOT_TRUST=0`. The S5d″ candidate payload is `e26e37f5…`
+(83,886,080 bytes; contract 133/133; `emmc-block-3-vread`) and the BOOT
+image is `10ea06bb…` (85,688,320 bytes; gate 18/18; only the ramdisk
+differs from the v5 baseline). Userdata stays `ae6e18e7…`. The full host
+suite was green at build time (314 PASS lines, default adapter 527, core
+47/35, verify build 20 scenarios and 16 mutations). The owner approved
+the BOOT-only flash and the single boot: preflight p69 `48e227dd…`,
+region read-back `10ea06bb…`, first 4 KiB `c5f3dbaf…`, p69 full
+`20e91998…`; userdata and the protected partitions unchanged.
+
+### 5.4.9 S5d″ device verdict and whole-media target fix (2026-11-17)
+
+The one boot of `10ea06bb…` failed in VREAD; its budget is consumed.
+WINDOWS (`valid=1 count=2 pub=2 phase=5 perr=0 wdiag=15 dma=1`) and
+VERIFY (`valid=1 os=1 sysos=1 blocks=1025 ms=5136 dma=1`) passed. VREAD
+reported `passed=2 failed=6 reason=3 mask=c0 windows=2 spans=0
+mismatches=0 write=1 exports=7 seq_ms=0 seq_bytes=0 failcase=0
+failstatus=e00002c2 failblock=0 failactual=0`, with both digest prefixes
+equal to the SHA-256 of empty input. `mask=c0` means only the write
+refusal and the export checks passed. `e00002c2` is
+`kIOReturnBadArgument`, returned by the first read before any data
+arrived; `@Gta4lEmmcBlock.cpp:13452` is the intentional report panic.
+
+Cause: `runVread` selected its read target by volume UUID, i.e. the APFS
+volume media, and issued a raw linear read there. The APFS volume does
+not serve window-linear bytes and rejects the request. The evidence
+checker and the expected digests assume window bytes, and the plan
+asked for reads through the window's IOMedia. The host harness had
+modelled the volume as a linear view directly under the window, so the
+path passed on the host. Reads now resolve the window's single whole
+IOMedia by walking the provider chain from the volume to the window,
+requiring exactly one whole media with the window size, not writable,
+opened reader-only. The volume media stays the target of the three
+`native_verified_block_*` exports, which is what `bsd_init` and the
+cache mount use. `msize`/`mwhole`/`vst` were added so a future failure
+names its target and per-case status.
+
+The host model now mirrors the device: window, whole media, APFS
+container, APFS volume whose linear read returns
+`kIOReturnBadArgument`. Before the fix it reproduced the device line
+exactly (`passed=2 mask=c0 reason=3 failcase=0 failstatus=e00002c2
+spans=0`); after the fix all eight cases pass with `spans=1030`, and
+the three whole-media failure scenarios and their mutations pass.
+
+The S5d‴ kernels are rebuilt from the fixed driver. The trust-on kernel
+is `d8a89161…` (51,699,712 bytes; archive `e6e75cc4…`, qualified;
+audit `out/gta4l/storage-abi-d8a89161` PASS, 190 slots/181 bindings;
+`bsd_init.o` probe/audit/trust = 1). The diagnostic kernel from
+`configs/gta4l_vread_defconfig` is `88af03fe…` (51,699,712 bytes; same
+archive; audit `out/gta4l/storage-abi-88af03fe` PASS; probe/audit/
+trust = 0). This is host evidence only; the next device rung is the
+S5d‴ candidate. That payload is `dee221a7…` (83,886,080 bytes; contract
+133/133; `emmc-block-3-vread`) and the BOOT image is `401f6a7a…`
+(85,688,320 bytes; gate 18/18; only the ramdisk differs from the v5
+baseline). The final host suite is green against this exact source:
+exit=0, 318 PASS lines, default adapter 527 scenarios, core 47/35,
+verify build 23 scenarios and 21 mutations (all rejected). Nothing has
+been flashed or booted; the device is in TWRP with p69 `20e91998…` (the
+consumed S5d″ image) and userdata unchanged.
+
+### 5.4.10 S5d‴ verdict and whole-media position fix (2026-11-17)
+
+The one boot of `401f6a7a…` failed in VREAD; its budget is consumed.
+WINDOWS (`valid=1 count=2 pub=2 phase=5 perr=0 wdiag=15 dma=1`) and
+VERIFY (`valid=1 os=1 sysos=1 blocks=1025 ms=5026 dma=1`) passed for the
+second time. VREAD stopped at target resolution: `passed=0 failed=8
+reason=1 mask=00 windows=0 msize=0 mwhole=0 vst=00000000`, so no case
+ran and the write/export evidence was skipped as well.
+
+Cause: `gta4l_vread_whole_media` walked from the volume to the window
+and returned null at the first `Whole=true` node whose size or writable
+flag did not match. Apple's APFS stack publishes a synthesized container
+disk that is itself `Whole=true` and sits between the volume and the
+real whole media, so the walk stopped there. The host model had omitted
+that disk.
+
+The harness now models the full stack: window, block-storage driver,
+real whole media, synthesized container disk (whole, writable), APFS
+container core, and the volume whose linear read returns
+`kIOReturnBadArgument`. With the previous driver it reproduced the
+device line exactly (`passed=0 reason=1 msize=0 mwhole=0`).
+
+The driver now selects the media **directly under the window** (the
+driver child), not the first whole node: it walks the same bounded
+chain, requires `Whole=true` and the window size, opens it reader-only,
+and records `Writable` without rejecting it. A target failure no longer
+exits early; the six read cases are marked not-run (`vst` nibble 7) and
+the write and export cases still run. VREAD adds `mdiag=<OS>/<SystemOS>`
+with depth, whole-node count, code (0 ok, 1 no volume, 2 depth, 3 no
+media under the window, 4 size, 5 open) and flags for writable, opened
+and volume found. The widest line is 484 bytes, the report shape is 30
+screen rows, and the line bound stays 512 bytes.
+
+The host verify build has 24 scenarios and 21 mutations, including the
+synthesized container, a writable target, a missing driver, wrong size,
+early-exit and writable-report controls. The evidence checker validates
+`mdiag` and its self-test rejects bad code, unopened-target and
+missing-volume values.
+
+The S5d⁗ kernels: trust-on `f0026cde…` (51,699,712 bytes; archive
+`97982b7f…`; audit `out/gta4l/storage-abi-f0026cde` PASS; flags 1/1/1)
+and diagnostic `82b2def0…` (same archive; audit
+`out/gta4l/storage-abi-82b2def0` PASS; flags 0/0/0). The candidate
+payload is `1088ee2c…` (83,886,080 bytes; contract 133/133;
+`emmc-block-3-vread`) and the BOOT image is `0c25d559…` (85,688,320
+bytes; gate 18/18; only the ramdisk differs from the v5 baseline).
+
+### 5.4.11 S5d⁗ device verdict and closeout (2026-11-17)
+
+The one boot of `0c25d559…` **passed**. Its budget is consumed; the
+tablet returned to TWRP.
+
+- WINDOWS `valid=1 reason=0 count=2 pub=2 phase=5 perr=0 wdiag=15 dma=1`,
+  `pwait=100 rms=465 rch=129`. Third device pass.
+- VERIFY `valid=1 os=1 sysos=1 blocks=1025 ms=5186 vload=2171 vhash=2074
+  vopen=646 vedge=177 dma=1`. Third device pass; 5,026-5,186 ms over
+  three boots.
+- VREAD `cases=8 passed=8 failed=0 reason=0 mask=ff windows=2
+  msize=6077580800 mwhole=1 vst=00000000 mdiag=06000206/06000204
+  spans=1030 mismatches=0 write=1 exports=7 seq_ms=726
+  seq_bytes=4194304`, `dig=4b6a7a20…`, `sdig=37945379…`.
+- `mdiag` decoded: both windows code 0, target opened, volume found,
+  two whole nodes (synthesized container + real whole media), real media
+  not writable. Walk depth OS 6, SystemOS 4. The depth difference is
+  real registry shape; no code may hard-code a depth.
+- The report panic `@Gta4lEmmcBlock.cpp:13452` is the intended
+  end-of-rung panic.
+
+Host validation: the evidence checker was run against the v2 image
+`ae6e18e7…` (9,455,947,776 bytes) with the owner report and
+`--expect-verify --expect-vread`: **PASS** for WINDOWS, VERIFY and VREAD
+(recomputed `dig`/`sdig`, span count, `msize`, `mdiag`, both envelope
+prefixes). The checker gained the VERIFY phase fields
+`vload/vhash/vopen/vedge` and the rule that their sum cannot exceed
+`ms`; its self-test rejects a missing phase, an over-budget sum and a
+non-numeric phase.
+
+Post-boot read-only TWRP re-measure: p69 `c58fc82d…`, first 4 KiB
+`5afccfff…`, userdata manifest `3ddf4d4f…`, `OS.vroot 5f14cb46…`,
+`SystemOS.vroot e3cbe583…`, recovery/efs/sec_efs unchanged. No writes
+were issued.
+
+Verified sequential read through the whole stack: 4 MiB in 726 ms
+(≈5.78 MB/s at 32 KiB requests). Raw direct DMA measured 25.8 MB/s in
+B10.13; the difference is per-span owner I/O, SHA-256 and the copy.
+Decision: no verified-span cache for the first root boot. The 120,000 ms
+pre-root bound covers ≈690 MB at this rate, far more than the window
+needs to reach the root mount; revisit only if S5e stalls.
+
+This verdict proves on hardware: published-window reads go through
+`verifiedWindowRead` and return image-matching bytes; the window refuses
+writes before I/O; the three `native_verified_block_*` exports resolve
+the OS volume, authorize its dev_t and reproduce the envelope SHA-384.
+It does not prove the root mount, `bsd_init` with
+`XNU_OWNER_ROOT_TRUST=1`, lifetime errors over a full boot, APFS
+mounting a verified volume, or the SystemOS/cache mounts. Those are
+S5e-a/S5e.
+
+### 5.4.12 S5e-a root-boot inventory (2026-11-17, host only)
+
+Read from the pinned sources and the board configuration; no code or
+device action.
+
+**Root selection.** `board.toml [payload.adt]` already carries
+`root_match_volume_uuid = 04769D26-…`, which the device-tree generator
+writes to `/chosen:root-matching` as an `IOPropertyMatch` on `IOMedia`
+`UUID`. `IOFindBSDRoot` uses that dictionary, waits up to
+`ROOTDEVICETIMEOUT` (120 s on iOS) for the service, then reads the BSD
+name/major/minor and panics `Failed to mount root device` on timeout.
+The driver verifies and publishes both windows in ~6 s (VERIFY 5.0-5.2 s
+plus publication), so no root-wait change is needed. A root payload must
+not pass `rd=md0`; that path bypasses the UUID match and has no verified
+volume.
+
+**Root mode.** `gta4l-emmc-root=1` requires block=3, windows, verify and
+DMA and refuses vread and every other selector. After publication it
+logs `ROOT: online=1`, sets `reportDone` and returns without the terminal
+report panic; the watchdog exits. Lifetime errors use the S5d′ latch,
+one transport recovery, one offline notification and the 120,000 ms
+pre-root panic bound. Host scenarios cover success, recovery, verify
+mismatch and after-mount behaviour.
+
+**Mount flags needed for launchd.** On this iPadOS 17 image the dyld
+shared cache lives in the SystemOS cryptex, so a root-only boot is not
+enough for userland. `XNU_OWNER_CACHE_MOUNT=1` mounts SystemOS at
+`/private/preboot` and sets `DYLD_SHARED_CACHE_DIR` and
+`DYLD_FALLBACK_LIBRARY_PATH`; `XNU_OWNER_CACHE_STARTUP=1` selects the
+owner dyld flags. The build script enforces: mount requires
+`XNU_OWNER_ROOT_TRUST=1`; startup requires mount; boot manifest requires
+startup; Data mount requires manifest plus `XNU_NATIVE_RAM_BLOCK` and
+the observed Data UUID; cryptex-file lookup requires startup. The trust
+paths are implemented in `kern_exec` before launchd and therefore after
+the root authorization, so they cannot change the root verdict itself.
+
+**Trust cache.** The fixture owner trust cache used by the diagnostic
+payload is for the RAM-root fixture, not for Apple binaries. The root
+payload must use the two unchanged original modules
+(`build/original-static-system-trust/original-static-system.bundle`)
+built by `scripts/build-original-system-trust.py`. That script needs the
+21H461 restore IPSW (`refer/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw`)
+and `.cache/firmware/target-volumes/static-trustcache.bin`. Neither input
+is present in the current checkout, and the extracted system trust
+module comes from the IPSW `Cryptex1,SystemTrustCache`.
+
+**Data.** `/private/var` needs an APFS Data seed. The current
+`fs-timer-hold` `root.img` is a RAM-root fixture, not a Data volume.
+`scripts/prepare-owner-data-fixture.py` builds a real seed, but it needs
+macOS `hdiutil`/`diskutil` and the extracted OS mount
+`.cache/firmware/target-volumes/os-mount`; neither is available on this
+Linux host. `XNU_OWNER_DATA_MOUNT` also requires the boot manifest and
+the observed Data volume UUID, which is not known.
+
+**Consequence.** Two rungs are possible:
+
+- **S5e-min (recommended first).** Root payload without `rd=md0`, without
+  Data and without the cache flags: prove only that the verified OS
+  window is selected as `rootdev`, mounted read-only and accepted by
+  `bsd_init` through `native_verified_block_root_authorized`. Expected
+  console: `ROOT: online=1`, `Got boot device = …`, `BSD root: …`, no
+  `rootvp not authenticated` panic and no `ROOT: error`. A later
+  userland failure is expected and does not fail S5e-min.
+- **S5e-full.** Add `XNU_OWNER_CACHE_MOUNT=1` and
+  `XNU_OWNER_CACHE_STARTUP=1`, the original trust bundle and a real Data
+  seed (or a RAM Data seed with its UUID wired into the kernel) to reach
+  launchd. This is blocked until the IPSW/static trust cache and the
+  Data seed (or macOS-side seed tooling) are available.
+
+No code change is proposed from the inventory: the only S5e-specific
+work is the root payload personality (five tokens, no `rd=md0`, root
+refusal matrix) and the payload trust/Data inputs.
+
+### 5.4.13 S5e-min root personality and candidate (2026-11-17, host only)
+
+The wrapper, contract checker and packager accept a new root
+personality, `emmc-block-3-root`. It maps to exactly
+`gta4l-emmc-block=3 gta4l-emmc-windows=1 gta4l-emmc-verify=1
+gta4l-emmc-dma=1 gta4l-emmc-root=1`, refuses a Data ramdisk and a
+Data-ramdisk manifest, and therefore cannot boot `md0`. The checker
+also refuses `rd=` and `rootdev=` in root mode, a missing windows,
+verify or DMA token, a vread token, a duplicate or non-1 root token,
+another modifier, and a payload that contains `scratch-data.img`. It
+now parses the verify token for the existing windows personalities as
+well, which closes a gap where `emmc-block-3-verify` could omit
+`gta4l-emmc-verify=1`. The builder tests cover the five-token mapping,
+the missing `rd=md0`, the absent Data ramdisk and the refusal matrix;
+the packager accepts the new name.
+
+Candidate inputs and hashes:
+
+| Artifact | Bytes | SHA-256 |
+| --- | --- | --- |
+| trust-on kernel `f0026cde…` | 51,699,712 | `f0026cde0ac7a4cd1b51135e3825bcc8d5f4d5f2c2e27b3db98e9915c666e364` |
+| payload `emmc-block-3-root` | 83,886,080 | `6aebc9bc0195e364b46daee4c596985c5856733d9b5d56895e57b77b17bdd339` |
+| BOOT `9719dae3…` | 85,688,320 | `9719dae313b055f225e78fd77ee8cde7b11817493aa6f52fd17e4b7c654fa8d9` |
+
+The payload contract is PASS (143 checks) and the boot-image gate is
+18/18. The payload's xnu arguments carry the five tokens and no
+`rd=`; the ADT still carries `/chosen:root-matching` with
+`04769D26-2CA0-4825-B443-E2E5F88300F2`. The fixture owner trust cache
+(56 bytes, `30a72f78…`) is included unchanged; it only adds hashes and
+is not the S5e-full trust input. The exact kernel binary was audited
+for the trust wiring: `_native_owner_root_trust_enabled = 1`,
+`_native_owner_root_decision = -1` before boot,
+`_native_verified_block_root_authorized` and both root checkpoints are
+present. The documented `bsd_init` flags are 1/1/1.
+
+The packaging baseline is the retained S5d⁗ image `0c25d559…`, not
+the v5 file: `out/gta4l/boot/boot-ram-root-sdhci-v5.img` is no longer
+in the checkout. The gate verified the retained image's header page,
+kernel section `a4b054e0…`, zero padding, firmware, boot DTB and
+section boundaries against the pinned v5 values, so only the ramdisk
+differs. The candidate's BOOT is the same 85,688,320-byte shape.
+
+One device boot is the rung. Pass: `WINDOWS valid=1`, `VERIFY valid=1`,
+`ROOT: online=1`, `Got boot device`, `BSD root`, no
+`rootvp not authenticated after mounting` and no `ROOT: error`/
+`offline`. A later userland stop without the SystemOS dyld cache,
+original trust bundle and Data volume is expected and recorded, not a
+failure. The expected console and failure markers were written to
+`out/gta4l/ram-root-emmc-s5e-min-candidate-evidence/expected-console.txt`
+before the boot. The TWRP preflight matched the expected p69
+`c58fc82d…`, first 4 KiB `5afccfff…`, userdata manifest `3ddf4d4f…`,
+both vroots and the protected partitions. The BOOT-only flash pushed
+and wrote `9719dae3…` (20,920 blocks) and the region read-back matched
+byte-for-byte; the first 4 KiB is `425b24a2…`, the full p69 is
+`c5b196a1…` (the tail after the image is unchanged). The tablet stays
+in TWRP for the one owner-triggered boot; no boot or reboot was
+performed.
+
+### 5.4.14 S5e-min device verdict and registry-lifetime fix (2026-11-17)
+
+BOOT `9719dae3…` was flashed once to BOOT after the full TWRP preflight
+matched, and the owner booted it once. The region read-back was exact
+(`9719dae3…`, first 4 KiB `425b24a2…`, full p69 `c5b196a1…`). The boot
+did not reach a usable root; it panicked with:
+
+```
+A kext releasing a(n) Gta4lEmmcBlock has corrupted the registry @OSObject.cpp:224
+```
+
+`9719dae3…` is consumed and added to the do-not-boot list.
+
+Root cause: the windows and widthhold start paths start two threads
+(watchdog and reporter) but take one retain, while each thread entry
+releases once. Every diagnostic personality panicked before the second
+release, so the imbalance was invisible. Root mode returns after
+`ROOT: online=1`, both releases run, and the second one drops the
+registered `Gta4lEmmcBlock` below its collection count. The fix adds the
+missing retain before the reporter start in both paths. The host seam
+now tracks retain/release counts and a new `windows-retain-balance`
+scenario pins the two-thread count; it also prevents the latent bug from
+returning through the widthhold path. The block suite is green at 528
+adapter PASS lines and core 47/35; the payload, package and evidence
+gates also pass.
+
+The fixed archive needs a new trust-on kernel built from
+`gta4l_defconfig`, a new storage-ABI audit and a fresh payload/BOOT
+candidate (S5e-min-b). No new candidate or device action yet.
+
+### 5.4.15 S5e-min-b candidate after the lifetime fix (2026-11-17)
+
+The trust-on kernel was rebuilt from `gta4l_defconfig` with the fixed
+archive. The archive is `3100a35c…`; `Gta4lEmmcBlock.cpp` is
+`1de81ea6…` and the block suite is green at 528 adapter PASS lines with
+core 47/35. The bootstrap link used the qualified `82b2def0…` audit;
+the fixpoint archive was then qualified and the final kernel
+`028fdbd2…` (51,699,712 bytes) was audited separately
+(`out/gta4l/storage-abi-028fdbd2` PASS: 190 slots, 181 bindings,
+vtable `fffffff005cb44c0`, metaclass `fffffff006add1d0`, service
+`fffffff007b4f5b8`). The link hash changes between passes; the ABI
+does not. The exact kernel has `_native_owner_root_trust_enabled = 1`
+and `_native_owner_root_decision = -1` before boot.
+
+Candidate: payload `b349789a…` (83,886,080 bytes, 143 contract checks,
+no Data ramdisk, no `rd=`) and BOOT `da670456…` (85,688,320 bytes,
+gate 18/18, first 4 KiB `8cde4e8a…`). The retained S5d⁗ image
+`0c25d559…` is again the packaging baseline because the v5 file is
+absent; the gate checks the same pinned header, kernel section
+`a4b054e0…`, padding, firmware and boot DTB. The expected console adds
+the explicit absence of the `Gta4lEmmcBlock` registry panic. The TWRP
+preflight matched (p69 `c5b196a1…`, first 4 KiB `425b24a2…`, userdata
+manifest `3ddf4d4f…`, both vroots and the protected partitions). The
+BOOT-only flash wrote `da670456…` (20,920 blocks); the region read-back
+matched, the first 4 KiB is `8cde4e8a…` and the full p69 is
+`ae9b0ada…`. The tablet stays in TWRP for the one owner-triggered boot;
+no boot or reboot was performed.
+
+### 5.4.16 S5e-min-b verdict and S5e-min-c panic summary (2026-11-17)
+
+BOOT `da670456…` was flashed once and booted once. The final screen
+held only:
+
+```
+unexpected SIGKILL of launchd with reason -- namespace 9 code 0x9 description none
+```
+
+Namespace 9 is `OS_REASON_EXEC`; code 9 is
+`EXEC_EXIT_REASON_TASKGATED_OTHER`, set in the `kern_exec` signature
+check. The `Gta4lEmmcBlock` registry panic did not return, so the
+lifetime fix passed. Root authorization is **inconclusive**: the panic
+screen does not retain the `ROOT: online=1`, `Got boot device` or
+`BSD root` lines.
+
+Host evidence explains the launchd stop. The real `sbin/launchd` from
+the OS DMG `044-76040-038.dmg` (read with `7z x -so`, nothing written)
+is 561,856 bytes, SHA-256 `8cec9a3c…` (the same pin as
+`prepare-owner-data-fixture.py`), ad-hoc signed (CodeDirectory flags
+`0x2`, empty CMS slot), cdhash `1d52c697…`. The payload's only trust
+cache is the 56-byte fixture bundle with one entry (`71f32329…`).
+AMFI therefore refuses the exec and taskgated is absent, which is the
+trust-bundle stop S5e-a predicted. Reaching launchd's exec means
+`bsd_init` accepted an eMMC root (there is no `md0`), but not whose
+check accepted it.
+
+The temporary device patch `patches/xnu/gta4l-owner-root-panic.patch`
+appends the verdict to the initproc SIGKILL panic and both `Process 1
+exec … failed` panics:
+
+```
+owner-root: trust=%u apple=%d decision=%d accepted=%u ro=%d mdev=%x sdev=%x
+```
+
+followed by `drv=online=%u win=%u errors=%u recov=%u offline=%u
+mount=%u` from a weak driver hook. The gta4l driver sets the hook only
+after `ROOT: online=1`, reads its state under a try-lock, and prints
+`busy` or `none` when it cannot. The patch is in the device series
+after the shared owner-root patch; it will be folded into the shared
+patch when the owner asks for the cleanup, after all boot work.
+
+S5e-min-c candidate: kernel `47ef01b0…` (51,699,712 bytes,
+`gta4l_defconfig`, trust flags 1/1/1, `trust_enabled=1`), archive
+`3bab25a5…` from `Gta4lEmmcBlock.cpp 298756fc…`, storage-ABI
+`out/gta4l/storage-abi-47ef01b0` PASS (190 slots, 181 bindings,
+vtable `fffffff005cb44c0`, metaclass `fffffff006add1d0`, service
+`fffffff007b4f5b8`), payload `81303a79…` (143 checks, no Data, no
+`rd=`) and BOOT `1936202d…` (85,688,320 bytes, 18/18, first 4 KiB
+`0537cad2…`). The block suite is green at 528 adapter PASS lines, 25
+verified-read scenarios (including `root-summary`) and core 47/35. The
+TWRP preflight matched (p69 `ae9b0ada…`, first 4 KiB `8cde4e8a…`,
+userdata manifest `3ddf4d4f…`, both vroots and the protected
+partitions); the BOOT-only flash wrote `1936202d…` and the region
+read-back matched, first 4 KiB `0537cad2…`, full p69 `9522e8be…`. One
+owner-triggered boot is pending; `1936202d…` is the one-shot candidate.
+
+### 5.4.17 S5e-min-c verdict and the per-file audit guard (2026-11-17)
+
+BOOT `1936202d…` was flashed once after the matching preflight and
+booted once. The final line was byte-identical to S5e-min-b and carried
+no `owner-root:` suffix. The cause was the build flag, not the panic
+path: `XNU_OWNER_ROOT_AUDIT` is added only to
+`bsd_init.o_CFLAGS_ADD`, so `kern_sig.o` and `kern_exec.o` saw it
+undefined and compiled the empty-suffix branch. The helper and the
+`%s%s` formats were in the binary, but there were no call sites to
+`_native_owner_root_panic_summary`.
+
+The fix makes the helper unconditional in `bsd_init.c`; an internal
+`#if XNU_OWNER_ROOT_AUDIT` prints the owner globals and calls the weak
+driver hook, while the diagnostic build prints `owner-root:
+unavailable`. Both panic sites call the helper unconditionally. The
+next candidate (S5e-min-d) is rebuilt from the trust-on config.
+`1936202d…` is consumed and must not be booted again.
+
+### 5.4.18 S5e-min-d candidate after the unconditional call (2026-11-17)
+
+The revised patch leaves the helper in `bsd_init.c`, whose compile record
+carries `XNU_OWNER_ROOT_AUDIT=1`, and calls it unconditionally from both
+`kern_sig.c` and `kern_exec.c`. The exact kernel `5e6ecdb2…` was checked
+before flashing: only the real `owner-root: trust=…` string is present
+(not `owner-root: unavailable`), there are three call sites to
+`_native_owner_root_panic_summary` (two exec, one signal), and the driver
+symbol `_native_owner_root_summary` resolves. The earlier S5e-min-c
+candidate had the formats but no call sites because
+`XNU_OWNER_ROOT_AUDIT` is a `bsd_init.o`-only define; the unconditional
+call closes that gap.
+
+Candidate: kernel `5e6ecdb2…` (51,699,712 bytes, trust flags 1/1/1,
+`trust_enabled=1`), archive `3bab25a5…`, storage-ABI
+`out/gta4l/storage-abi-5e6ecdb2` PASS (190 slots, 181 bindings, same
+vtable/metaclass/service), payload `9cb5e01b…` (143 checks, no Data, no
+`rd=`) and BOOT `3cbea4d5…` (85,688,320 bytes, 18/18, first 4 KiB
+`1746dd20…`). The TWRP preflight matched (p69 `9522e8be…`, first 4 KiB
+`0537cad2…`, userdata manifest `3ddf4d4f…`, both vroots and the
+protected partitions); the BOOT-only flash wrote `3cbea4d5…` and the
+region read-back matched, first 4 KiB `1746dd20…`, full p69
+`08c4beda…`. One owner-triggered boot is pending; `3cbea4d5…` is the
+one-shot candidate.
+
+### 5.4.19 S5e-min-d verdict: verified-root authorization passed (2026-11-17)
+
+BOOT `3cbea4d5…` was booted once. The launchd panic line carried the
+verdict:
+
+```
+owner-root: trust=1 apple=80 decision=1 accepted=1 ro=1
+mdev=<same> sdev=<same>
+drv=online=1 win=2 errors=0 recov=0 offline=0 mount=1
+```
+
+The owner corrected the initial mounted/selected device transcription;
+the two values were equal. `csflags` was not reported and is not
+recorded. This proves on hardware that the verified OS window was
+selected, mounted read-only (`ro=1`), authorized through the owner path
+(`apple=80`, `decision=1`) and accepted by `bsd_init` (`accepted=1`),
+with the driver still online, two windows published and no recorded
+lifetime errors, recoveries or offline notification at the checkpoint.
+`mount=1` shows the introspective authorization function ran. The
+launchd SIGKILL remains the separate userland failure: the real launchd
+is ad-hoc signed and no loaded trust cache contains its cdhash.
+
+Post-boot read-only TWRP re-measure: p69 `08c4beda…`, first 4 KiB
+`1746dd20…`, recovery `14e11370…`, efs `51fa824c…`, sec_efs
+`3a265d58…`, userdata manifest `3ddf4d4f…`, `OS.vroot 5f14cb46…`,
+`SystemOS.vroot e3cbe583…`, and the full 9,455,947,776-byte userdata
+image `ae6e18e79937cd74e33b64749f9945d531bd2c1c5f92b922be2fe165496ef62a`
+— byte-identical. The root boot wrote nothing to userdata.
+
+`3cbea4d5…` is consumed and must not be booted again. Next: the
+original trust bundle, a real Data seed and the packaging budget, then
+S5e-full for launchd execution.
+
+### 5.4.20 S5e-inputs: original trust bundle and packed Data seed (2026-11-17)
+
+**Trust bundle.** `scripts/fetch-gta4l-trust-inputs.py` read only
+`BuildManifest.plist` (`199fb5de…`), the `StaticTrustCache` IM4P
+(`4563bdbf…`, member `Firmware/044-76040-038.dmg.trustcache`) and the
+`Cryptex1,SystemTrustCache` IM4P (`9742f3d5…`, member
+`Firmware/044-76034-038.dmg.trustcache`) from the public 21H461 restore
+image by HTTP Range. The server returned 206; a non-206 response is
+refused. `scripts/build-gta4l-original-trust.py` re-checked the manifest
+SHA-384 digests and extracted the unchanged version-2 modules:
+`da88460e…` (2,478 entries) and `d121ba89…` (76 entries). The bundle is
+`7416ca4f…` (61,356 bytes) and contains the real launchd cdhash
+`1d52c697…` in the static module (entry 279). No full IPSW was
+downloaded and no trust-cache allowlist was added.
+
+**Data seed.** A fresh macOS staging directory built the real seed with
+the existing `prepare-owner-data-fixture.py`:
+`owner-data-32.cdr`, 33,554,432 bytes, SHA-256 `d2c4bc74…`, volume UUID
+`A3168F05-0F99-42FE-AA9F-F0276C1AFBB1`, 39 regular files from the
+original `private/var` tree. The packed form is
+`owner-data-32.dbr`, 979,024 bytes, SHA-256 `97789988…`, logical size
+32 MiB and logical SHA-256 `d2c4bc74…`. The v5 firmware's inner FV
+contains `PackedRAMDisk` and `DBRDISK1`, so the packed path is
+supported. The real userdata image was never attached or written.
+
+**Budget and personality.** The packed seed fits the 80 MiB payload:
+kernel 51,699,712 + seed 979,024 + trust bundle 61,356 plus FAT/ADT
+overhead. The new `emmc-block-3-root-data` personality maps to the same
+five root tokens, requires `--data-seed-manifest`, preserves
+`packed_data_ramdisk = true`, and refuses the fs-timer fixture. The real
+payload `3f58bd96…` (83,886,080 bytes) passes 146 contract checks with
+the packed seed and original trust bundle. The full-root kernel uses
+`configs/gta4l_fullroot_defconfig` with cache mount, cache startup,
+boot manifest and Data mount enabled; `XNU_NATIVE_RAM_BLOCK` stays off.
+The optional GPU-addon mount references `native_ram_block_gpu_addon`;
+this board's eMMC archive supplies a guarded zero-return stub because it
+does not use the NativeRamBlock provider.
+
+### 5.4.21 S5e-full candidate: full-root kernel and BOOT (2026-11-17)
+
+`configs/gta4l_fullroot_defconfig` enables the trust-on baseline plus
+`XNU_OWNER_CACHE_MOUNT=1`, `XNU_OWNER_CACHE_STARTUP=1`,
+`XNU_OWNER_BOOT_MANIFEST=1` and `XNU_OWNER_DATA_MOUNT=1`, with
+`XNU_NATIVE_RAM_BLOCK` off. The eMMC archive supplies a guarded
+zero-return `native_ram_block_gpu_addon` stub because the board does not
+use the NativeRamBlock provider; the provider's own function has the
+same signature and returns 0 when no `GpuAddon` mapping exists.
+
+The first full-root link (`8b679787…`) exposed a stale archive binding:
+the `IOService` service metaclass moved to `…b57738` while the archive
+had been built with `…b4f5b8`. Copying that kernel's audit into the
+bootstrap path and relinking produced `2eebafbf…` (51,748,864 bytes);
+its audit has the same vtable/metaclass and service `…b57738`, so the
+archive `796aa9ad…` now matches the exact kernel. The audit is
+`out/gta4l/storage-abi-2eebafbf` PASS (190 slots, 181 bindings).
+
+Candidate: payload `ad93d160…` (83,886,080 bytes, 146 contract checks,
+packed Data `97789988…` logical 32 MiB `d2c4bc74…`, original trust
+bundle `7416ca4f…`, no `rd=`) and BOOT `5b6f3b9b…` (85,688,320 bytes,
+gate 18/18, first 4 KiB `a169cd5d…`). The full-root payload still fits
+the 80 MiB layout. `test-gta4l-storage-abi.py` gained `--kernel/--plan`
+so the full-root audit is checked directly; it PASSes. The block suite
+is green at 528 adapter PASS lines, 25 verified-read scenarios and core
+47/35. The TWRP preflight matched (p69 `08c4beda…`, first 4 KiB
+`1746dd20…`, userdata manifest `3ddf4d4f…`, both vroots and the
+protected partitions). The BOOT-only flash wrote `5b6f3b9b…` and the
+region read-back matched, first 4 KiB `a169cd5d…`, full p69
+`01e7439e…`. One owner-triggered full-root boot is pending;
+`5b6f3b9b…` is the one-shot candidate.
+
+### 5.4.22 S5e-full device verdict: Data prepare failed with EINVAL (2026-11-17)
+
+One boot of BOOT `5b6f3b9b…` printed only
+`offline scratch Data mount failed: 22 @kern_exec.c:8038`. No
+`P5 REPORT/WINDOWS/VERIFY/ROOT` lines, no `owner-root:` summary and no
+`load_init_program: attempting to load /sbin/launchd` were visible. The
+root, verify and SystemOS cache-mount stages are therefore unobserved on
+this boot, not passed; the Data panic carries no root verdict. The BOOT
+is consumed and must never be booted again.
+
+The TWRP remeasure after the boot matched: p69 full
+`01e7439e…`, first 4 KiB `a169cd5d…`, userdata manifest `3ddf4d4f…`,
+OS.vroot `5f14cb46…`, SystemOS.vroot `e3cbe583…`, efs `51fa824c…`,
+sec_efs `3a265d58…` and recovery `14e11370…`. The boot wrote nothing.
+
+**Cause.** `kern_exec.c:8038` panics after `native_owner_data_prepare()`
+returns nonzero. With `XNU_NATIVE_RAM_BLOCK` off that function uses
+`mdevlookup(0)`/`mdevgetrange(0)`, but no code in this XNU tree creates
+`md0`: `mdevinit` has no caller and its only producer is the
+`CONFIG_MEMDEV_INSECURE` boot-argument parser, which this kernel does
+not call. The payload also publishes `PackedRAMDisk` with the packed
+979,024-byte range, which only the native sparse provider understands;
+the loader deliberately keeps it packed (DarwinBoot `KeepPacked`). The
+first check in the md branch therefore failed with its initial `EINVAL`.
+This path had never run before: earlier rungs printed `mount=1` for
+`gta4l_root_mount_seen`, not a Data mount.
+
+**Seed check (host).** Expanding `owner-data-32.dbr` reproduces
+`d2c4bc74…` (33,554,432 bytes). The APFS volume superblock at block 162
+carries `A3168F05-0F99-42FE-AA9F-F0276C1AFBB1`; the container UUID is
+`544de0a0-158c-4d53-b15c-4851fc1edfcc`. `04769D26-…`, previously in
+`CONFIG_XNU_OWNER_DATA_VOLUME_UUID`, is the tablet's original root
+volume from the userdata probe, not this fixture's Data volume.
+
+**Fix.** Use the qualified native provider, as the shared Data checkpoints
+do: select the `RamBlock` component, add `component:RamBlock` to the
+kernel archive plan so `libRamBlock.a` is built and force-loaded, and set
+`CONFIG_XNU_NATIVE_RAM_BLOCK=y`. That also adds the `NativeRamBlock`
+`IOResources`/`IOBSD` personality, which publishes an IOMedia from
+`/chosen/memory-map/PackedRAMDisk`; the original APFS discovers the
+volume before the mount. The provider requires the AES/crypto prelink
+closure already selected (`XNU_NATIVE_AES`, `prelinked`,
+`SOURCE_CORECRYPTO14`). `CONFIG_XNU_OWNER_DATA_VOLUME_UUID` is set to the
+fixture volume `A3168F05…`. No loader, seed or payload-layout change is
+needed; `packed_data_ramdisk=true` is exactly the provider's input. The
+eMMC `native_ram_block_gpu_addon` stub compiles out once the provider is
+linked.
+
+**Link inputs for the native provider.** Two references in
+`NativeRamBlock.cpp` need board definitions in the static kernel link.
+The provider declares the optional persistent-store hooks
+(`native_ufs_store_mode/open/read/write/sync/gpt_check`) as weak imports;
+this board has no UFS store window, so `package/Gta4lEmmcBlock.cpp`
+defines zero-return stubs that keep the Data seed volatile. The
+provider's vtable also inherits `IOBlockStorageDevice::doUnmap` and
+`doGetProvisionStatus`, which the prelinked original storage class does
+not export; the same object defines unsupported stubs (the RAM seed is
+not unmapped and is fully provisioned). `scripts/build-gta4l-emmc-block.py` passes
+`-DXNU_NATIVE_RAM_BLOCK=1` from the kernel environment so the adapter's
+GPU-addon stub is omitted when the provider is linked, avoiding a
+duplicate symbol. The eMMC driver's own `doUnmap` override and the
+storage-ABI bindings are unchanged.
+
+**Audit-tool note.** Linking the provider adds a second
+`IOBlockStorageDevice` subclass, and the two board shims define base
+names (`doUnmap`, `doGetProvisionStatus`) that the original class does
+not export. The derive step now ranks candidate dispatch tables by
+exported-name hits among tables whose unexported slots stay in the
+original IOStorageFamily text, instead of requiring every exported name
+to match; the subclass vtable fails the text test. The board shims are
+`visibility("hidden")` so the original class's exported names still
+resolve to its own methods, and the name-to-address map used by the
+audit stays correct. The audit's post-snapshot check now compares the derived binding
+count with the slots whose target actually equals the export, not with
+name presence, for the same shadowing reason. These are host-tool
+robustness fixes in `UniXNU/scripts/audit-storage-interface.py`, not
+device changes.
+
+The SystemOS cache panic carries the same treatment: `cache_error`,
+`native_owner_cache_stage`/`status`/`mount_status` and the owner root
+summary, so a single visible cache line also gives the cache failure
+point and the root verdict. This is a temporary device panic patch to
+fold into the shared owner-root patch after the boot work.
+
+### 5.4.23 S5f native-provider candidate (2026-11-17)
+
+The native-provider kernel is `59d8d372…` (51,802,112 bytes). Its
+`.config` has `XNU_NATIVE_RAM_BLOCK=y`, `XNU_NATIVE_AES=y` and the
+fixture volume `A3168F05-0F99-42FE-AA9F-F0276C1AFBB1`. The exact-kernel
+storage audit passes on Linux/QEMU: vtable `…44c0`, original metaclass
+`…d1d0`, service `…b5f738`, 190 slots and 181 bindings
+(`out/gta4l/storage-abi-59d8d372`); the storage-ABI test with
+`--kernel`/`--plan` passes. The archive is `bda0124f…`.
+
+The two base-method shims are local symbols in the final link
+(`llvm-nm` shows `doUnmap`/`doGetProvisionStatus` as local, and the
+kernel export table does not contain them), so the original storage
+class keeps its own exported names. The `NativeRamBlock` personality is
+present in `KernelConfigTables`.
+
+Candidate: payload `13ea2360…` (83,886,080 bytes; contract pass with
+`packed_data_ramdisk=true`, the packed seed `97789988…`, the original
+trust bundle `7416ca4f…`, seed UUID `A3168F05…` and no `rd=`), and BOOT
+`a817bdde…` (85,688,320 bytes, gate 18/18, first 4 KiB
+`78c4ddf7…`). The kernel args are `sheng-pmgr=2`; the diagnostic is
+`emmc-block-3-root-data`.
+
+Expected next evidence: the SystemOS cache mount and Data mount both
+succeed, then `load_init_program: attempting to load /sbin/launchd` and
+positive launchd/userland execution. If a mount fails, the panic now
+carries `cache=<status>/<mount>` or `stage=<n> cache=<status>/<mount>
+dev=<dev> base=<base> size=<size>` plus the `owner-root:` summary, so
+one visible line identifies the failure point and the root verdict.
+
+### 5.4.24 S5f-native BOOT-only flash (2026-11-17)
+
+The TWRP preflight matched p69 `01e7439e…`, first 4 KiB `a169cd5d…`,
+userdata manifest `3ddf4d4f…`, OS.vroot `5f14cb46…`, SystemOS.vroot
+`e3cbe583…`, efs `51fa824c…`, sec_efs `3a265d58…` and recovery
+`14e11370…`. The BOOT-only flash wrote `a817bdde…` (20,920 blocks); the
+region read-back matched, first 4 KiB `78c4ddf7…`, full p69
+`4ff21dd1…`. One owner-triggered S5f-native boot is pending. No boot,
+reboot or other write; userdata stays `ae6e18e7…`.
+
+### 5.4.25 S5f-native boot outcome: no panic, static magenta bar (2026-11-17)
+
+One boot of BOOT `a817bdde…` showed only the static magenta bar for
+about 2–3 minutes: no panic screen, no text, and no self-reboot or
+watchdog reset. The owner forced power-off, then the TWRP remeasure
+matched p69 `4ff21dd1…`, first 4 KiB `78c4ddf7…`, userdata manifest
+`3ddf4d4f…`, OS.vroot `5f14cb46…`, SystemOS.vroot `e3cbe583…`, efs
+`51fa824c…`, sec_efs `3a265d58…` and recovery `14e11370…`; the boot
+wrote nothing.
+
+The magenta band is the entry probe's stage 2, painted once before the
+MMU is enabled (`docs/guide/debugging.md`, "Color bars"); it does not
+animate. With `XNU_BOOT_PROGRESS=0` and no video-console output, the
+panic screen is the only thing that can draw after it. "Static magenta"
+therefore means "no panic", not "stopped at the MMU". The outcome is
+undetermined: either both mounts and launchd succeeded silently, or the
+new provider/APFS path hung before a panic site. `a817bdde…` is
+consumed and must not be booted again.
+
+The next rung adds a deadline checkpoint panic: a one-shot
+`thread_call` armed at `load_init_program` entry by the boot argument
+`gta4l-deadline=<seconds>`. At the deadline it panics with the cache and
+Data stages/status, the RAM-block ready/read/write/failure counters,
+PID 1's name and csflags, and the `owner-root:` summary. The callout
+still reports if the BSD thread is stuck in a mount, and it gives
+positive launchd evidence when userland is running. If it does not fire
+at all, the system is wedged with interrupts off and the next rung uses
+the entry-probe reset/boot-progress path instead.
+
+### 5.4.26 S5g-deadline candidate (2026-11-17)
+
+The deadline checkpoint is in the device panic patch: a one-shot
+`thread_call` armed at `load_init_program` entry by
+`gta4l-deadline=<seconds>`, panicking with the cache/Data stages and
+status, the RAM-block ready/read/write/failure counters, PID 1's name
+and csflags, and the `owner-root:` summary. Kernel `158ae8b0…`
+(51,802,112 bytes) passes the exact-kernel storage audit with the same
+vtable/metaclass/service (`…44c0`/`…d1d0`/`…b5f738`, 190/181) and the
+ABI test. The archive is unchanged (`bda0124f…`), so the block suite
+result still applies.
+
+Candidate: payload `2c203af5…` (83,886,080 bytes, contract pass,
+packed seed, original trust, kernel args `sheng-pmgr=2
+gta4l-deadline=45`) and BOOT `200818ba…` (85,688,320 bytes, gate 18/18,
+first 4 KiB `b2b4d0be…`). The TWRP preflight matched p69 `4ff21dd1…`
+and the unchanged userdata/vroot/protected regions; the BOOT-only flash
+wrote `200818ba…`, region read-back exact, full p69 `30385793…`. One
+owner-triggered deadline boot is pending; `a817bdde…` stays retired.
+
+### 5.4.27 S5g verdict and S5h activity candidate (2026-11-18)
+
+**S5g-deadline (BOOT `200818ba…`) passed storage, root and launchd
+exec.** Owner photo: `cache=0/0/6 data=0/4 dev=1000002 size=2000000
+ram=1/57/0/0 pid1=launchd cs=22002301 owner-root: trust=1 apple=80
+decision=1 accepted=1 ro=1 mdev=1000005a sdev=1000005a drv=online=1
+win=2 errors=0 recov=0 offline=0 mount=1`.
+
+- SystemOS status 0, mount 0, final stage 6; Data status 0, stage 4,
+  writable at `/private/var` on the native RAM disk. `dev 1000002` is
+  the reference Data device (16777218); the size is the 32 MiB seed.
+- PID 1 is `launchd`, csflags `22002301` (VALID, HARD, KILL,
+  REQUIRE_LV, NO_UNTRUSTED_HELPERS, SIGNED; not KILLED). `bsd_init.c`
+  names PID 1 `init` before exec, so this is positive launchd-execution
+  evidence. The root verdict is accepted read-only on the verified
+  device.
+- **0 Data writes in 45 s** is the open question: 57 reads is about the
+  APFS mount, and the reference QEMU runs wrote early. Writes are not
+  failing (failure counter 0). `CS_PLATFORM_BINARY` was absent from the
+  raw flags, but this XNU keeps platform status on the task/blob
+  (`kern_exec.c:1733`) and `csops` adds the bit only when reporting
+  (`kern_proc.c:3261`), so that was a false alarm; S5h prints
+  `csproc_get_platform_binary` explicitly.
+- TWRP remeasure after S5g matched p69 `30385793…`, first 4 KiB
+  `b2b4d0be…`, the userdata manifest, both vroots and the protected
+  partitions; no eMMC write.
+
+**S5h-activity** adds two samples (30 s and 120 s after
+`load_init_program`) with RAM reads/writes/failures, eMMC lifetime read
+requests/blocks (new `gta4l_emmc_lifetime_*` counters in the core and a
+lock-free `native_gta4l_emmc_activity` accessor), `nprocs`, total
+execs, total exits and the last exited process's name/pid/status/
+namespace/code (a `gta4l_note_exit` hook in `proc_exit`). The panic
+line reports both samples plus launchd's raw csflags, platform-binary
+status and the root summary.
+
+Kernel `7650934a…` (51,802,112 bytes) passes the exact-kernel storage
+audit (vtable/metaclass/service `…44c0`/`…d1d0`/`…b5f738`, 190/181) and
+the ABI test; the eMMC archive changed only by the counters and the
+block suite is green again (528 adapter, 25 verified-read, core 47/35).
+Payload `9ba6ea12…` (83,886,080 bytes, contract pass) and BOOT
+`a422425b…` (85,688,320 bytes, gate 18/18, first 4 KiB `8b722c83…`),
+args `sheng-pmgr=2 gta4l-deadline=120`. The TWRP preflight matched;
+the BOOT-only flash wrote `a422425b…`, region read-back exact, full
+p69 `8f091a6c…`. One owner-triggered S5h boot is pending; `200818ba…`
+stays retired.
+
+### 5.4.28 S5h result and S5i read sketch (2026-11-18)
+
+**S5h-activity (BOOT `a422425b…`) result.** Owner transcription, wraps
+joined:
+
+```
+cache=0/0/6 data=0/4 dev=1000002 size=2000000 pid1=launchd
+cs=22002301 pb=1
+t0 ram=57/0/0 emmc=54315/448856 np=1 ex=2 x=2
+t1 ram=57/0   emmc=216373/1745320 np=1 ex=2 x=2
+last=init/1/0/0/0
+owner-root: trust=1 apple=80 decision=1 accepted=1 ro=1
+mdev=100005a sdev=100005a drv=online=1 win=2 errors=0 recov=0 offline=0 mount=1
+@kern_exec.c:7998
+pages=0x79d0b free=0x73222
+```
+
+SystemOS and writable RAM Data still pass; `pb=1` confirms platform
+classification. Between the samples the block driver accepted 162,058
+more read requests and 1,296,464 more 512-byte blocks: 633.039 MiB
+requested, 4 KiB per request, over a nominal 90 s. These counters are
+incremented before transport I/O (`Gta4lEmmcBlockCore.c`) and count
+requests/blocks, not completed or unique bytes. RAM reads stayed 57,
+device writes 0, and np/ex/x flat. This rules out an idle kernel but
+does **not** establish userland progress; repeated reads of the same
+blocks or ordinary loading both fit.
+
+`last=init/1` is not evidence launchd exited. The hook runs at
+`proc_prepareexit` entry, which is also used during task teardown, and
+it does not distinguish old exec-related objects from the live
+initproc. `ex` counts `execve` attempts; `np` is instantaneous. The
+root driver records no errors/recoveries, which supports healthy
+observed root I/O but not every completion. **S5f remains unobserved
+beyond its static bar.** No trust or write-path change is implied.
+
+The 4 KiB average matches the verified-window path: `verifiedWindowRead`
+splits requests into 4 KiB spans and reads each through the core. S5i
+adds a passive `gta4l_emmc_verify_spans/bytes` count at that path, a
+fixed 64-entry repeated-LBA sketch (`repeat`, `last_lba`, hottest LBA
+and count) in the core, real sample timestamps and final RAM failures.
+It drops the misleading `ex/x/last` print. The sketch is approximate
+under concurrency, bounded and payload-free.
+
+Kernel `104231ae…` (51,802,112 bytes) passes the exact-kernel storage
+audit with the same ABI (`…44c0`/`…d1d0`/`…b5f738`, 190/181) and the
+ABI test; the block suite is green (528 adapter, 25 verified-read, core
+47/35). Payload `2c2578f7…` (83,886,080 bytes, contract pass) and BOOT
+`12333314…` (85,688,320 bytes, gate 18/18, first 4 KiB `7c921e66…`),
+args `sheng-pmgr=2 gta4l-deadline=120`. The TWRP preflight matched p69
+`8f091a6c…` and the unchanged regions; the BOOT-only flash wrote
+`12333314…`, region read-back exact, full p69 `770f8c75…`. One
+owner-triggered S5i boot is pending; `a422425b…` stays retired.
+
+### 5.4.29 S5j window counters and host audit (2026-11-18)
+
+The S5i physical LBAs map into SystemOS (`0x1a47ae0` and `0x1a47950` ->
+SystemOS bytes `0x0e9dc000`/`0x0e9aa000`). The SystemOS is the sealed
+`SystemCryptex` volume `8846FE78-2910-4297-AF97-D59BB6F8FC16`. The
+header scan found six subcache headers, but the "5.6 times one 113.8 MB
+subcache" inference was wrong: the volume holds 53 dyld cache files
+totalling 3,148.6 MiB (plus a 654.0 MiB `.symbols` file), spanning most of
+the 3.3 GB window. S5j's lifetime range covers essentially the whole
+volume, so this is one broad pre-read, not a localized re-read.
+`VerifiedRoot/src/verified_root.c` `vr_verify_block` hashes bytes
+already supplied and compares with in-memory hashes; it adds no disk
+I/O. `ubc_subr.c` `cs_validate_page` receives the page. The open
+question is the caller (AMFI page validation versus dyld/APFS page-in),
+the parent request size, the origin PID and UBC retention.
+
+S5j adds passive per-window parent counters: 4 KiB/≤64 KiB/>64 KiB
+size bins, physical first/last/min/max offsets, origin PID bins
+(1/0/other), error and verify counts. The deadline prints `p0`/`p1`.
+
+Kernel `cff6b491…` (51,802,112 bytes) passes the exact-kernel storage
+audit with the same ABI (`…44c0`/`…d1d0`/`…b5f738`, 190/181) and the
+ABI test. Payload `1deea675…` (83,886,080 bytes, contract pass) and BOOT
+`ea56c1d1…` (85,688,320 bytes, gate 18/18, first 4 KiB `34043244…`),
+args `sheng-pmgr=2 gta4l-deadline=120`. The TWRP preflight matched p69
+`770f8c75…` and the unchanged regions. The block suite is **green**
+against this source (528 adapter, 25 verified-read, core 47/35). The
+final BOOT is staged but **not flashed**: the one S5j boot is pending
+the owner. p69 remains the consumed S5i `12333314…`; do not boot it.
+On the next session, re-preflight and flash `ea56c1d1…` for that one
+boot.
+
+### 5.4.30 S5j-window BOOT-only flash (2026-11-18)
+
+The re-preflight matched p69 `770f8c75…`, first 4 KiB `7c921e66…`,
+userdata manifest `3ddf4d4f…`, OS.vroot `5f14cb46…`, SystemOS.vroot
+`e3cbe583…`, efs `51fa824c…`, sec_efs `3a265d58…` and recovery
+`14e11370…`. The BOOT-only flash wrote `ea56c1d1…` (20,920 blocks);
+the region read-back matched, first 4 KiB `34043244…`, full p69
+`417ec5bb…`. The owner booted this image once; it is consumed and must
+not be booted again. The kernel is `cff6b491…`, payload `1deea675…`,
+args `sheng-pmgr=2 gta4l-deadline=120`; the block suite is green
+(528/25/47+35). No other write; userdata stays `ae6e18e7…`.
+
+
+### 5.4.31 S5j result and S5k verified-read batching (2026-11-18)
+
+The S5j deadline reported 210,922 SystemOS parent requests, **all
+≤4 KiB** (4,095.9 bytes average), 823.9 MiB total, zero errors, and
+99.97% issued from PID 1 context. The lifetime range ran from SystemOS
+byte 0 to `0xbf148000` (about 3.06 GB of the 3.3 GB window) at
+6.9 MiB/s. RAM had 57 reads, zero writes and zero failures; the process
+count stayed 1.
+
+The SystemCryptex contains **53** dyld cache files (49 numbered
+subcaches, two `.dylddata` and two `.dyldlinkedit` companions) totalling
+3,148.6 MiB, plus one 685,817,856-byte `.symbols` file. The earlier
+"54 cache files" count was off by one. `dyld_shared_cache_arm64.03` is
+114,229,248
+bytes with a SHA-256 CodeDirectory (`version 0x20400`,
+`pageSize = 14`, 6,958 code slots, `codeLimit = 113,999,872`). On this
+4 KiB-page kernel, `cs_native4k_prepare` therefore takes the whole-file
+path for every cache file over 32 MiB: 1 MiB `vn_rdwr` chunks with
+`IO_NOCACHE`, hashing each 16 KiB block and deriving 4 KiB hashes. The
+pre-read totals about 3.1 GiB and accounts for the PID 1 reads, the
+absence of children/writes and the flat process count. The earlier
+"5.6× one 113.8 MB subcache" statement is retracted.
+
+The old verified windows advertised `kIOMaximumSegmentCountReadKey = 1`
+and issued one 4 KiB transport read per verified span. Both driver read
+paths copy into the caller and never DMA into client memory:
+`verifiedWindowRead` reads into `verifiedSpan` and calls
+`buffer->writeBytes`, and `copyOutCallback` calls
+`requestBuffer->writeBytes`. S5k therefore:
+
+- advertises `GTA4L_EMMC_BLOCK_VERIFY_SEGMENTS` = 8 (32 KiB) on the
+  windows and the whole device;
+- reads each contiguous group of 4 KiB spans as one request of at most
+  `GTA4L_EMMC_BLOCK_MAX_BYTES` (64 blocks / 32 KiB), splitting an
+  unaligned range at that limit;
+- verifies every 4 KiB span from the group buffer before copying it to
+  the caller, keeping the fail-closed mismatch latch;
+- allocates the 32 KiB chunk and enables `read_multi` in windows mode,
+  so the group is one CMD18 (DMA or PIO) instead of up to eight CMD17
+  requests.
+
+The verified-read host suite is **green**: 29 scenarios (including
+multi-span, unaligned two-group, middle-span tamper and short group)
+and 21 mutation controls (including `group-one-span`). The full block
+suite is also **green**: 528 adapter scenarios, 29 verified-read
+scenarios and core 47 with 35 mutation controls. Kernel
+`6d1a0728…` (51,802,112 bytes) passes the exact-kernel storage audit
+and ABI test. Payload `36731be7…` (83,886,080 bytes) packages BOOT
+`f8c414e4…` (85,688,320 bytes, gate 18/18, first 4 KiB `c0a5cdf8…`)
+with args `sheng-pmgr=2 gta4l-deadline=300`. The longer deadline lets
+the pre-read finish; at the measured 25.8 MB/s CMD18 rate, 3.1 GiB
+takes about 2 minutes.
+
+### 5.4.32 S5k-batch BOOT-only flash (2026-11-18)
+
+The re-preflight matched p69 `417ec5bb…`, first 4 KiB `34043244…`,
+userdata manifest `3ddf4d4f…`, OS.vroot `5f14cb46…`, SystemOS.vroot
+`e3cbe583…`, efs `51fa824c…`, sec_efs `3a265d58…` and recovery
+`14e11370…`. The BOOT-only flash wrote `f8c414e4…` (20,920 blocks);
+the region read-back matched, first 4 KiB `c0a5cdf8…`, full p69
+`06cfc20f…`. The Mac-side xz decode also matched `f8c414e4…`. The
+owner booted this image once; it is consumed and must not be booted
+again. The kernel is `6d1a0728…`, payload `36731be7…`, args
+`sheng-pmgr=2 gta4l-deadline=300`. No other write; userdata stays
+`ae6e18e7…`.
+
+### 5.4.33 S5k result: launchd exited without a dyld cache (2026-11-18)
+
+The batched verified reads moved launchd past the S5j pre-read stall,
+but it then exited instead of continuing:
+
+```
+initproc failed to start -- exit reason namespace 6 subcode 0x1
+description: Library not loaded: /usr/lib/libSystem.B.dylib
+  Referenced from: <4B525992-8C69-315E-A51A-CC9433E45B51> /sbin/launchd
+  Reason: tried: '/usr/lib/libSystem.B.dylib' (no such file, no dyld cache)
+frames ffffffff007a64ccc ffffffff00772da10 ffffffff00772cf14 ffffffff0077482cc
+       ffffffff007748618 ffffffff007282688 ffffffff0074259fc ffffffff0074255d8
+pages=0x79d0e free=0x4f40f
+```
+
+This is a new terminal state: dyld in launchd resolved its first
+dependency and concluded there was neither a shared cache nor a
+standalone `libSystem` (on iPadOS 17 the library exists only in the
+cache). Free pages fell from `0x73231` (94%) at the S5j deadline to
+`0x4f40f` (65%), about 574 MiB more in use, which suggests the run read
+or mapped substantially more than S5j but does not prove the pre-read
+finished.
+
+The panic is XNU's `initproc failed to start` path in `kern_exit.c`.
+`gta4l-owner-root-panic.patch` attaches the owner summary to the
+`kern_sig.c` SIGKILL-of-initproc panic and the deadline panic, not to
+this path, so no `drv=`, `p0`/`p1` or hash-cache counters printed. The
+owner timing is a rough guess (about 5.5–6 min from power-on, not
+measured); the deadline at 300 s fires about 5.5 min after power-on
+once `load_init_program` has run, so launchd may have exited at about
+the deadline. Do not rest conclusions on the estimate; S5l must print
+uptime at the panic.
+
+The S5k "about 2 minutes" estimate is retracted. It counted only raw
+transport at 25.8 MB/s and ignored APFS page-in, per-4 KiB
+`vr_verify_block` hashing, the kernel's 16 KiB/4 KiB rehash and launchd
+work. If most of the 3.1 GiB completed in 4.5–5 min, observed
+throughput was about 10–12 MiB/s, only about 1.5× S5j, so either the
+batching did not take effect or the per-4 KiB verification cost
+dominates. S5l must report the `p1` request-size bins and the
+`cs_native4k_read_ticks`/`hash_ticks` split.
+
+QEMU reference for the same image: the whole-cache pre-read completes
+with 53 ready signature blobs (`_cs_native4k_full_blocks=201083`,
+about 3.07 GiB) and launchd reaches `main`
+(`scripts/check-owner-cache-carrier-checkpoints.py:78`,
+`check-original-launchd-main-checkpoints.py:84`). Hardware must be
+explained against that baseline.
+
+Ranked hypotheses for S5l to separate:
+
+1. **The verified window went offline late in the run.** S5k is the
+   first hardware use of the 64-block CMD18/DMA path for root
+   (lifetime) reads. After the root mount, `lifetimeRootFailure` makes
+   one `speedRecover()`; if that fails the window goes offline silently
+   (no panic). Later reads then return `kIOReturnNoMedia`, the
+   signature is never attached and there is no cache. A late hash
+   mismatch (`state->ready = 0`) looks identical from userland.
+2. **One cache file is rejected by `cs_native4k_prepare`** (scatter
+   vector, `codeLimit64`, a size/slot mismatch): a format-level
+   `ENOTSUP`/`EBADEXEC` would leave that blob unusable.
+3. **Shared-region map failure unrelated to storage** (address/slide or
+   4 KiB-page mapping limits).
+4. **Cache path/visibility**: the owner-cache mount is not where dyld
+   looks. Earlier rungs printed `cache=0/0/6` and QEMU uses the same
+   mount code, so this is least likely.
+
+The close-out read-only check matched p69 `06cfc20f…`, first 4 KiB
+`c0a5cdf8…`, userdata manifest `3ddf4d4f…`, OS.vroot `5f14cb46…`,
+SystemOS.vroot `e3cbe583…`, efs `51fa824c…`, sec_efs `3a265d58…` and
+recovery `14e11370…`. No device write occurred after the S5k flash.
+
+
+### 5.4.34 S5k root cause: owner cache carrier not compiled in (2026-11-18)
+
+The S5k pre-read finished and the shared-region map then rejected the
+cache. The kernel was compiled with **`XNU_OWNER_CACHE_CARRIER=0`**
+(confirmed in `compile_commands.json` for `vm_unix.c`; the linked kernel
+has no `native_owner_cache_carrier_*` symbols). With `CONFIG_CSR` off,
+`shared_region_map_and_slide_setup()` accepts a cache file only when it
+is on the process root mount or on the mount of
+`/private/preboot/Cryptexes`. This board mounts the SystemOS at
+`/private/preboot`, and that volume's root contains only `System` and
+`usr` (no `Cryptexes`), so the first cache file fails the check with
+`EPERM`; `_shared_region_map_and_slide()` returns it before
+`vm_shared_region_map_file()` runs. dyld then falls back to a standalone
+`libSystem`, which does not exist on iPadOS 17, and launchd exits with
+"no dyld cache". This is deterministic and independent of the eMMC
+transport: the S5k driver read the whole 3.1 GiB, then the map failed.
+
+The memory evidence fits: free pages fell by about 574 MiB, close to the
+combined logical size of the two decmpfs-compressed `.dyldlinkedit`
+files, whose decompression retains pages even with `IO_NOCACHE`. The
+pre-read therefore completed rather than timing out.
+
+Fix selected: **`CONFIG_XNU_OWNER_CACHE_CARRIER=y`** in
+`configs/gta4l_fullroot_defconfig`. The carrier validates the OS root
+volume UUID `04769D26-…`, the SystemOS UUID `8846FE78-…`, both
+read-only APFS mounts and the exact
+`/private/preboot/System/Library/Caches/com.apple.dyld` parent before
+accepting a file (`offline-owner-cache-carrier.patch`). It is the
+configuration QEMU's owner-cache checkpoint measures (53 accepts); it is
+not a code-signing or verification bypass.
+
+Host audit of the 53 files: 51 decodable files all have CodeDirectory
+`version 0x20400`, SHA-256, `pageSize = 14`, no scatter,
+`codeLimit64 = 0` and `nCodeSlots == ceil(codeLimit / 16384)`. The two
+`.dyldlinkedit` files are decmpfs-compressed (7z cannot extract the
+payload) but the QEMU checkpoint's 53 ready blobs cover the same 53
+files. No format-level rejection remains.
+
+S5l adds a printing-only suffix to the `initproc failed to start` panic
+(`gta4l-owner-root-panic2.patch`): uptime, the last
+`cs_native4k_prepare` error and position, `cs_native4k` bytes/full
+blocks/ready blobs, bad hashes, shared-region map calls/stage/error/kr/
+file count, carrier accepts/rejects, the existing driver summary and the
+`p0`/`p1` window counters. If the carrier fix works, the cache maps and
+launchd should reach the same later sandbox refusal QEMU records
+(`_container_init(): sandbox_get_container_expected()`); if not, this
+line identifies the exact failure without another blind boot.
+
+
+### 5.4.35 S5l carrier build and BOOT-only flash (2026-11-18)
+
+S5l enables `CONFIG_XNU_OWNER_CACHE_CARRIER=y` and adds
+`gta4l-owner-root-panic2.patch` (board series): a printing-only suffix on
+the `initproc failed to start` and deadline panics with uptime, the last
+`cs_native4k_prepare` error/limit/offset, `cs_native4k` bytes/full
+blocks/ready blobs/bad hashes, shared-region map calls/stage/error/kr/
+file count, carrier accepts/rejects, the driver summary and the `p0`/`p1`
+window counters. The S5k driver is unchanged.
+
+Build results: kernel `f4154496…` (51,806,208 bytes) has
+`native_owner_cache_carrier_accepts/rejects`, `gta4l_panic_suffix`,
+`cs_native4k_last_error` and `native_owner_sr_calls` linked;
+`vm_unix.c` compiles with `XNU_OWNER_CACHE_CARRIER=1`. It passes the
+exact-kernel storage audit (`storage-abi-f4154496`) and the ABI test.
+The block suite is **green** (528 adapter, 29 verified-read, core
+47/35). Payload `f6f19a1a…` (83,886,080 bytes) keeps the original trust
+bundle `7416ca4f…`, the packed seed `97789988…`, the
+`A3168F05-…` Data volume and the diagnostic
+`gta4l-emmc-block=3 gta4l-emmc-windows=1 gta4l-emmc-verify=1
+gta4l-emmc-dma=1 gta4l-emmc-root=1`; args stay
+`sheng-pmgr=2 gta4l-deadline=300`. BOOT `702f62cf…` (85,688,320 bytes)
+passes the 18/18 component gate; first 4 KiB `969f5f14…`.
+
+The preflight matched p69 `06cfc20f…`, first 4 KiB `c0a5cdf8…`,
+userdata manifest `3ddf4d4f…`, OS.vroot `5f14cb46…`, SystemOS.vroot
+`e3cbe583…`, efs `51fa824c…`, sec_efs `3a265d58…` and recovery
+`14e11370…`. The BOOT-only flash wrote `702f62cf…` (20,920 blocks);
+the region read-back matched, first 4 KiB `969f5f14…`, full p69
+`7d15e745…`. The Mac-side xz decode also matched. The owner then booted
+the image once; it is consumed and must not be booted again. No other
+write; userdata stays `ae6e18e7…`. See 5.4.36 for the result.
+
+Expected S5l outcome: the pre-read completes, `car=53/0` and
+`sr=…/3/0/0/53` show every cache file accepted and the shared-region
+map returned 0, and launchd proceeds to the later Sandbox refusal QEMU
+records (`_container_init(): sandbox_get_container_expected()`,
+namespace 7) rather than the namespace-6 missing-library exit. If the
+carrier or map still fails, the suffix reports the exact stage and
+error.
+
+
+### 5.4.36 S5l result: cache mapped, launchd running (2026-11-18)
+
+BOOT `702f62cf679363246738f7fabb573082861fc624754056d87aefa484f80e97c9`
+is consumed (one boot). Owner transcription, wraps joined; the screen
+showed `s51`/`l1`, read here as `s5l`/`ll`:
+
+```
+gta4l s5l: cache=0/0/6 data=0/4 up=330 pid1=launchd pb=1
+t0 ram=57/0/0 emmc=27652/1704424 vrfy=210992/864223232 np=1
+ram=66/2/0 emmc=105671/6044120 vrfy=753453/3086143488 np=22
+p0 r=742 b=10867 e=0 l=1c2cda0 n=19d2c00 x=19c2b72 bin=627/115/0
+p1 r=104603 b=6010807 e=0 l=1c2cda0 n=19d2c00 x=1fcb640 bin=12041/92562/0
+hc=3294543872/201083/53 bad=0 le=0 ll=0 lo=0 sr=1/3/0/0/54 car=53/0
+owner-root: trust=1 apple=80 decision=1 accepted=1 ro=1 mdev=100005a
+sdev=100005a drv=online=1 win=2 errors=0 recov=0 offline=0 mount=1
+@kern_exec.c:8088
+pages=0x79d0e free=0x49dbe
+```
+
+The panic is the 300 s deadline (`gta4l_deadline_fire`,
+`@kern_exec.c:8088`), not an `initproc` exit: nothing fatal happened
+before 330 s of uptime. The carrier fix is confirmed: `car=53/0` (all 53
+cache files accepted, none rejected) and `sr=1/3/0/0/54` (one map call,
+final stage, error 0, `kr` 0). The 54 mapped entries are probably the 53
+files plus one `fd = -1` in-memory data entry that skips the carrier
+check; this is not proven. Hash preparation matches QEMU exactly:
+201,083 full 16 KiB blocks and 53 ready blobs, 3,294,543,872 logical
+bytes, `bad=0`.
+
+Userland started: `np` rose 1 -> 22 and RAM Data writes rose 0 -> 2, the
+first hardware boot where launchd got past the cache and spawned
+processes. The driver stayed online with `errors=0 recov=0 offline=0`,
+and the S5k batching path is qualified: `p1` averages about 29 KiB per
+request (6,010,807 blocks x 512 / 104,603), with 92,562 requests in the
+over-4-KiB, up-to-64-KiB bin.
+
+Measured timing: `up=330` is the 300 s deadline plus about 30 s to
+`load_init_program`. The first sample at 75 s had verified 864 MB; the
+final count is 3,086 MB. That is about 11.5 MB/s to the sample and
+8.7 MB/s after it, so the pre-read took roughly 270-300 s and launchd had
+only about 30 s of userland before the timer. No read/hash split was
+printed, so the 11.5 MB/s bottleneck (transport, per-4 KiB verification
+or kernel rehash) remained unmeasured. The later S5m split answered it:
+reads took 229.7 s and kernel hashing 49.5 s, so the read path dominates
+(5.4.38). Free pages were `0x49dbe` of `0x79d0e` (about 61%), so there
+was no memory pressure.
+
+The `p0`/`p1` position fields are unreliable: `p0` reports
+`n=19d2c00 > x=19c2b72` (min above max) and both windows report the same
+last LBA, while `p0`'s range lies inside the SystemOS window. The counts
+and size bins are internally consistent (`p0` 627+115=742,
+`p1` 12,041+92,562=104,603). The fields were removed from the S5m print
+rather than guessed at.
+
+The read-only close-out after the boot matched p69 `7d15e745…`, first
+4 KiB `969f5f14…`, userdata manifest `3ddf4d4f…`, OS.vroot
+`5f14cb46…`, SystemOS.vroot `e3cbe583…`, efs `51fa824c…`, sec_efs
+`3a265d58…` and recovery `14e11370…`. No device write followed the S5l
+flash.
+
+S5m is the next image: a printing-only change that adds the exec/exit
+totals and the last exiting process (name, pid, status, namespace, code),
+the `cs_native4k` read/hash tick split in milliseconds, an explicit
+`gta4l-sample=<seconds>` boot argument for the comparison sample, and
+`gta4l-deadline=900`. Storage, trust and driver behaviour are unchanged.
+If launchd hits a fatal exit before the deadline, the `initproc` panic
+now prints the same suffix; otherwise the 900 s deadline shows how far
+userland gets.
+
+
+### 5.4.37 S5m build and BOOT-only flash (2026-11-18)
+
+S5m is a printing-only change on top of S5l. `gta4l-owner-root-panic2.patch`
+now also records the last process exit in the existing `gta4l_exit_*`
+globals and prints the exec/exit totals, the last exit (name, pid, status,
+namespace, code), and the `cs_native4k_read_ticks`/`hash_ticks` split in
+milliseconds. The unreliable `p0`/`p1` position fields are not printed.
+`load_init_program` accepts an explicit `gta4l-sample=<seconds>` boot
+argument for the comparison sample (default stays `deadline/4`). Storage,
+trust and driver behaviour are unchanged.
+
+Kernel `2ddaceae…` (51,806,208 bytes) has the carrier, `gta4l_panic_suffix`,
+`gta4l_exit_name`, `gta4l_exit_count`, `gta4l_exec_count` and
+`cs_native4k_read_ticks` linked, and still contains the `gta4l s5m:`
+format. It passes the exact-kernel storage audit (`storage-abi-2ddaceae`)
+and the ABI test. Payload `bdd39c63…` (83,886,080 bytes) keeps the original
+trust bundle `7416ca4f…`, the packed seed and the Data volume, with
+`sheng-pmgr=2 gta4l-deadline=900 gta4l-sample=300`. BOOT `e7bd0ff9…`
+(85,688,320 bytes) passes the 18/18 component gate; first 4 KiB
+`3bba98d1…`.
+
+The preflight immediately before the flash matched p69 `7d15e745…`, first
+4 KiB `969f5f14…`, userdata manifest `3ddf4d4f…`, OS.vroot
+`5f14cb46…`, SystemOS.vroot `e3cbe583…`, efs `51fa824c…`, sec_efs
+`3a265d58…` and recovery `14e11370…`. The BOOT-only flash wrote
+`e7bd0ff9…` (20,920 blocks); the region read-back matched, first 4 KiB
+`3bba98d1…`, full p69 `d75d1b2f…`, and the Mac-side xz decode
+`04f21a12…` matched. One owner-triggered S5m boot is pending; no boot,
+reboot or other write.
+
+Expected reading: the sample at 300 s is after the cache pre-read, so
+`t0` -> deadline covers userland only; `tick=rd=`/`h=` splits the pre-read
+time between transport and hashing; `ex=`/`last=` show exec/exit activity.
+A namespace-7 `_container_init(): sandbox_get_container_expected()` panic
+is the QEMU-observed next wall. A 900 s deadline with stable/growing `np`
+means userland stayed alive, and display is the next step.
+
+
+### 5.4.38 S5m result: watchdogd SIGTRAP at 367 s (2026-11-18)
+
+BOOT `e7bd0ff9…` (kernel `2ddaceae…`, payload `bdd39c63…`) is consumed; it
+was booted once and must not be booted again. Owner transcription, wraps
+joined (`watchdog[94]` is the truncated `watchdogd[94]`, `l1` read as `ll`,
+`owner=root` as `owner-root`):
+
+```
+watchdogd[94] exited -- exit reason namespace 2 subcode 0x5 description: none
+gta4l s5m: cache=0/0/6 data=0/4 up=367 pid1=launchd pb=1
+t0 ram=66/2/0 emmc=103189/6004280 vrfy=748473/3065745408 np=11
+ram=67/43/0 emmc=120139/6301112 vrfy=785578/3217727488 np=80
+p0 r=1279 b=22211 e=0 bin=987/292/0
+p1 r=118471 b=6252159 e=0 bin=23422/95049/0
+hc=3294543872/201083/53 bad=0 le=0 ll=0 lo=0 tick=rd=229726 h=49544
+sr=1/3/0/0/54 car=53/0 ex=3/57 last=watchdogd/94/5/2/5
+owner-root: trust=1 apple=80 decision=1 accepted=1 ro=1 mdev=100005a
+sdev=100005a drv=online=1 win=2 errors=0 recov=0 offline=0 mount=1
+frames (13, kernel exit path) pages=0x79d0e free=0x40cd0
+```
+
+The panic is a critical-process exit, not the 900 s deadline. `namespace 2`
+is `OS_REASON_SIGNAL` (`bsd/sys/reason.h:89`) and code 5 is `SIGTRAP`
+(`signal.h:88`); `last=…/5/2/5` agrees (rv 5 means signalled by 5). The
+kernel's `proc_handle_critical_exit()` prints the `%s[%d] exited` prefix for
+a non-init process; `watchdogd`'s launch plist (`3c05ece7…`) sets
+`_PanicOnCrash = {PanicOnConsecutiveCrash = true}`, so a signalled exit is
+fatal. PID 94 suggests at least one earlier crash, but the consecutive-crash
+counter is not directly observable; `ex=3/57` only counts instrumented
+`execve` calls, not `posix_spawn` or process creation.
+
+Userland progressed: `np` 11 -> 80 and Data writes 2 -> 43 between the sample
+and the panic, so this was not an early boot failure. Storage, verified root
+and the driver stayed clean: 53 ready blobs, `car=53/0`, map error 0,
+`bad=0`, `drv` online with no errors, recoveries or offline transition.
+Free pages were `0x40cd0` of `0x79d0e` (about 53%).
+
+**watchdogd audit (strong, offline).** Extracting the root image
+`044-76040-038` gives `/usr/libexec/watchdogd` `ded4c688…`, exactly the
+revision `UniXNU/scripts/check-watchdogd-branches.py` qualifies. That
+emulation of its real connection code shows: with `kern.hv_vmm_present = 0`
+and no `IOWatchdog` service, it executes `brk #1` at `0x10000ab0c` with
+"unable to lookup" (SIGTRAP); with `hv_vmm_present = 1` it exits 0; an open
+error also `brk`s. QEMU is a VM and takes the exit-0 branch, which is why it
+never hit this. The hardware exception PC was not captured; the evidence is
+the identical binary and the emulated branch. `dts/gta4l.dts` and the SM6115
+DTSI have no watchdog node. The only Apple watchdog driver matches
+`wdt,s5l8960x` on `AppleARMIODevice`; no `IOWatchdog` provider exists.
+OnePlus 5 (`cheeseburger`) hits the same SIGTRAP.
+
+**Timing split (correction).** `tick=rd=229726` is 229.7 s in vnode reads and
+`h=49544` is 49.5 s in the 16 KiB/4 KiB hashing, so reads are about 82% and
+kernel hashing about 18% of the 279.3 s preparation. The earlier S5l guess
+that hashing dominated was wrong. The read time includes APFS/decmpfs work,
+verified-root checking, transport and per-request overhead; it is a sum
+across threads, not wall time. A speed fix must target the read path and
+needs driver-side transport vs `vr_verify_block` ticks first.
+
+**Close-out.** The read-only TWRP check after the boot matched p69
+`d75d1b2f…`, first 4 KiB `3bba98d1…`, userdata manifest `3ddf4d4f…`,
+OS.vroot `5f14cb46…`, SystemOS.vroot `e3cbe583…`, efs `51fa824c…`, sec_efs
+`3a265d58…` and recovery `14e11370…`. No device write followed the S5m
+flash. The next step is the launchd policy override (S5n, 5.4.39); the
+alternative, a real SM6115 `IOWatchdog` provider, is deferred.
+
+### 5.4.39 S5n seed and BOOT: launchd watchdogd policy (2026-11-18)
+
+The owner chose the small supported override first: a root-owned launchd
+`disabled.plist` on the mutable Data seed that disables only
+`com.apple.watchdogd`, with a real SM6115 `IOWatchdog` provider as a later,
+separate track. The seed builder ran on the Mac as root, mounted the APFS
+image with owners enabled, and added exactly
+`/private/var/db/com.apple.xpc.launchd/disabled.plist` =
+`{com.apple.watchdogd = true}`, `root:wheel` mode 0644, 69 bytes. No other
+tree entry was added, removed or changed; `os_inputs_modified` stays false.
+The base packed seed `97789988…` (raw `d2c4bc74…`) became dbr `9303e3fc…`
+(raw `362edc1c…`, 1,282,128 encoded bytes). The policy bytes are
+`26c43c53…`. The builder report is `04722603…` and is required by the
+payload gate.
+
+Gates: `UniXNU/scripts/check-launchd-watchdog-policy.py` against launchd
+`8cec9a3c…` and the generated plist PASSes (root policy disables watchdogd
+only; uid 501/502/1000 are rejected). The payload builder now refuses a
+seed whose reported tree delta is not exactly that one file, whose policy
+owner/mode/bytes/hash differ, or whose report does not match the DBRDISK1
+file; the new host test covers the positive and negative cases. The payload
+manifest records the policy and the seed report hash.
+
+Kernel `2ddaceae…` is reused unchanged, so there is no new kernel audit and
+the panic label remains `gta4l s5m:`. Payload `1ac4b1ef…` (83,886,080
+bytes) carries the new seed, the original trust bundle `7416ca4f…` and
+`sheng-pmgr=2 gta4l-deadline=900 gta4l-sample=300`. BOOT `0a75d8f6…`
+(85,688,320 bytes) passes the 18/18 component gate with
+`only_ramdisk_differs=true`; first 4 KiB `4878ea80…`; xz `8ba57a4a…`; the
+Mac decode matched. The preflight immediately before the flash matched p69
+`d75d1b2f…` and the unchanged regions; the BOOT-only flash read back the
+region exactly, first 4 KiB `4878ea80…`, full p69 `bd2e509c…`.
+
+The Data mount payload passes `uid/gid = 99` with mount flags 0. Source
+reading: the VFS applies `mnt_fsowner` only when `MNT_IGNORE_OWNERSHIP` is
+set, and the request does not set it, so the on-disk owner should be what
+launchd sees. The seed has no `disabled.migrated`, so launchd takes its
+migration path; disassembly of launchd `8cec9a3c…` shows that path opens
+`disabled.plist` with `O_CREAT` (0x200) and mode 0666, without truncation,
+closes it and then reads it. The seed has no old `overrides.plist`, so
+nothing is migrated. The exact checker emulates the marker-present path;
+this boot confirms the migration path preserves the root-owned file.
+This is not yet hardware-confirmed; the S5n boot is the confirmation. If `watchdogd` still exits, the override was not applied and
+the next step is to audit mount ownership visibility, not to weaken the
+panic policy. One owner-triggered S5n boot is pending; do not boot the
+image twice.
+
+
+### 5.4.40 S5n result: userland survived the 900 s deadline (2026-11-18)
+
+BOOT `0a75d8f6…` (kernel `2ddaceae…`, payload `1ac4b1ef…`) is consumed; it
+was booted once and must not be booted again. Owner transcription, wraps
+joined (`l1` read as `ll`, `owner=root` as `owner-root`):
+
+```
+gta4l s5m: cache=0/0/6 data=0/4 up=932 pid1=launchd pb=1
+t0 ram=67/2/0 emmc=104531/6026336 vrfy=751230/3077038080 np=15
+ram=70/16953/0 emmc=169987/7406704 vrfy=923777/3783790592 np=110
+p0 r=9195 b=200051 e=0 bin=6122/3073/0
+p1 r=159226 b=7116583 e=0 bin=53827/105399/0
+hc=3294543872/201083/53 bad=0 le=0 ll=0 lo=0 tick=rd=228797 h=49022
+sr=1/3/0/0/54 car=53/0 ex=3/569 last=assistantd/359/6/8/1
+owner-root: trust=1 apple=80 decision=1 accepted=1 ro=1 mdev=100005a
+sdev=100005a drv=online=1 win=2 errors=0 recov=0 offline=0 mount=1
+@kern_exec.c:8101
+frames (4) pages=0x79cc2 free=0x6fd0
+```
+
+The panic is the deadline, not a crash. `kern_exec.c:8101` is the
+`panic("%s", line)` in `gta4l_deadline_fire()`; `up=932` is the 900 s
+deadline plus about 32 s to `load_init_program`. There is no
+`%s[%d] exited` banner, so no critical-exit panic occurred in about 600 s
+of userland.
+
+**The watchdogd override held (strong, indirect).** `watchdogd` has
+`KeepAlive {SuccessfulExit=false}` and `PanicOnConsecutiveCrash`; if
+launchd had still started it, its physical-branch `brk` would have recurred
+and panicked well within 600 s. `last=` names only the final exit, so this
+does not prove `watchdogd` never ran, but it is the expected outcome of the
+root-owned `disabled.plist` and the migration path. Mount ownership
+(`uid/gid = 99`, flags 0) did not hide the on-disk root owner, consistent
+with the source reading. The QEMU-observed namespace-7
+`_container_init` wall did **not** appear on hardware.
+
+Userland grew and kept working: `np` 15 -> 110 and Data writes 2 -> 16,953
+with 0 block failures. `ex=3/569` counts 569 exit-path events in about
+10 minutes; S5o later showed that most of them are exec handoffs, not
+crashes (see 5.4.42), so the earlier "crash/respawn churn" reading was
+wrong. `last=assistantd/359/6/8/1`: rv 6 is SIGABRT, namespace 8 is
+`OS_REASON_OBJC`, code 1. One crasher among many, not a cause by itself.
+
+Storage, cache and trust stayed clean: `car=53/0`, `sr=1/3/0/0/54`,
+`hc` 201,083/53, `bad=0`, driver online with `errors=0 recov=0
+offline=0`. Userland kept reading cleanly: +65,456 eMMC requests,
++1,380,368 blocks (about 707 MB), verified bytes 3,077 -> 3,784 MB. The
+timing split repeated: 228.8 s reads and 49.0 s hashing.
+
+Two observations are not yet explained: free pages fell to `0x6fd0` of
+`0x79cc2` (about 5.7%, roughly 112 MiB), and the 32 MiB RAM Data volume
+took 16,953 writes. The RAM disk is sparse and bounded by its 32 MiB
+logical size, and the block layer reported no failures, so the memory
+drop is not the Data disk; an APFS-level full volume (ENOSPC) is still
+possible. S5o adds printing-only per-namespace exit counts, the last four
+distinct exits, the most frequent exiting name, Data free space,
+free/wired pages and key daemon presence to decide the next step.
+
+The read-only TWRP close-out after the boot matched p69 `bd2e509c…`, first
+4 KiB `4878ea80…`, userdata manifest `3ddf4d4f…`, OS.vroot
+`5f14cb46…`, SystemOS.vroot `e3cbe583…`, efs `51fa824c…`, sec_efs
+`3a265d58…` and recovery `14e11370…`. No device write followed the S5n
+flash.
+
+
+### 5.4.41 S5o build and BOOT-only flash: exit diagnostics (2026-11-18)
+
+S5n left userland alive for the full 900 s but with 569 exits and free
+pages down to about 5.7%. S5o adds printing-only diagnostics to decide
+whether that is Data-volume exhaustion, jetsam, one dominant crasher or a
+normal iOS churn. Storage, trust, driver and the S5n seed are unchanged.
+
+The board-only `gta4l-owner-root-panic2.patch` now also keeps per-namespace
+exit counters (`OS_REASON_JETSAM` 1, `SIGNAL` 2, `CODESIGNING` 3,
+`LIBXPC` 7, `OBJC` 8, `EXEC` 9, `SANDBOX` 25 and other), a four-slot
+distinct-by-name exit ring with pid/rv/ns/code, an eight-slot most-frequent
+name table, `vfs_statfs` of the mounted `/private/var` (blocks/free/files/
+free files), `vm_page_free_count`/`vm_page_wire_count`, and presence of
+`logd`, `configd`, `backboardd`, `SpringBoard` and `mediaserverd`. The
+example panic label is `gta4l s5o:`; the existing cache, carrier, trust,
+driver, read/hash tick and last-exit fields are retained.
+
+Kernel `77dae596…` (51,806,208 bytes) is the fixpoint after the bootstrap
+pass; the exact-kernel audit `storage-abi-77dae596` PASSes and the ABI
+test PASSes. The first build stopped on two host errors that are fixed:
+`vm/vm_page.h` is not exported to this build (the counters are declared
+locally), and `vfs_statfs` returns `struct vfsstatfs *`, not `struct
+statfs *`. Payload `6fec80aa…` (83,886,080 bytes) keeps the S5n seed
+`9303e3fc…`, the root-owned policy, trust `7416ca4f…` and
+`sheng-pmgr=2 gta4l-deadline=900 gta4l-sample=300`. BOOT `1e638726…`
+(85,688,320 bytes) passes 18/18 with `only_ramdisk_differs=true`; first
+4 KiB `f4e6e4fa…`; xz `95961025…`; the Mac decode matched. The block suite
+is green: 528 adapter, 29 verified-read, core 47 + 35 mutation controls.
+
+The preflight immediately before the flash matched p69 `bd2e509c…`, first
+4 KiB `4878ea80…`, and the unchanged userdata/vroot/protected partitions.
+The BOOT-only flash read back the region exactly; first 4 KiB
+`f4e6e4fa…`, full p69 `78c37026…`. One owner-triggered S5o boot is
+pending; do not boot the image twice.
+
+Interpretation: a nearly zero `data` free-block count confirms the Data
+volume filled (next: a larger RAM seed or less logging, sized against
+free memory). A dominant `ns=1` is jetsam memory pressure. A dominant
+`top=` name is the crasher to audit like watchdogd. `spring=1` or
+`backboard=1` means display is the next milestone, not storage.
+
+
+### 5.4.42 S5o result: the exits are mostly exec handoffs (2026-11-18)
+
+BOOT `1e638726…` (kernel `77dae596…`, payload `6fec80aa…`) is consumed;
+it was booted once and must not be booted again. Owner transcription,
+wraps joined (`owner=root` read as `owner-root`):
+
+```
+gta4l s5o: cache=0/0/6 data=0/4 up=932 pid1=launchd pb=1
+ram=70/18359/0 emmc=169927/7379032 vrfy=920318/3769622528 np=108
+hc=3294543872/201083/53 bad=0 le=0 tick=rd=229646 h=49063
+sr=1/3/0/0/54 car=53/0 ex=3/619 last=coresymbolicationd/384/0/0/0
+ns=1/2/3/7/8/9/25/o=0/8/0/0/166/0/0/445
+last4=xpcproxy/383/0/0/0;fairplayd.A2/383/0/0/0;xpcproxy/384/0/0/0;coresymbolic/384/0/0/0
+top=xpcproxy/340 data=8192/1564/63482/62560 mem=45758/80054
+alive=logd1/configd1/backboard1/spring0/media1
+owner-root: trust=1 apple=80 decision=1 accepted=1 ro=1 mdev=100005a
+sdev=100005a drv=online=1 win=2 errors=0 recov=0 offline=0 mount=1
+@kern_exec.c:8255
+frames (4) pages=0x79cc1 free=0xb2be
+```
+
+`kern_exec.c:8255` in the S5o patch is `panic("%s", line)` inside
+`gta4l_deadline_fire()`; `up=932` is the 900 s deadline plus about 32 s
+to `load_init_program`. Storage, cache, trust and the driver are
+unchanged and clean: `car=53/0`, `sr=1/3/0/0/54`, `hc` 201,083/53,
+`bad=0`, `drv=online=1 errors=0 recov=0 offline=0 mount=1`. The timing
+split repeats (229.6 s reads, 49.1 s hashing).
+
+**Most exits are exec handoffs, not crashes.** On an exec such as
+`xpcproxy` becoming an on-demand service, `proc_exec_switch_task()`
+moves `P_REF_SHADOW` from the new proc record to the old one
+(`kern_exec.c:5054`); the old record then traverses the exit path, where
+`gta4l_note_exit()` sits in `proc_prepareexit()`. `last4` shows the pairs
+(`xpcproxy/383` then `fairplayd.A2/383`, `xpcproxy/384` then
+`coresymbolicationd/384`) and `top=xpcproxy/340`. The S5n reading of 569
+exits as crash/respawn churn was therefore wrong; `o=445` includes
+namespace 0 (no exit reason) for the handoffs and normal idle exits.
+The clean `fairplayd.A2` and `coresymbolicationd` exits confirm the
+on-demand daemon pattern.
+
+**The Data volume was not full at the deadline:** 8,192 4 KiB blocks
+(32 MiB), 1,564 free (~6.1 MiB, 19%) and 62,560 free files. **No jetsam
+pressure:** `ns=1` is 0. Free memory is 45,758 pages (~179 MiB, 9.2%),
+matching the panic's `free=0xb2be`; 80,054 pages are wired (~313 MiB).
+
+**Real leads:** 166 `OS_REASON_OBJC` aborts, 8 `OS_REASON_SIGNAL` exits,
+and `backboardd` alive while `SpringBoard` is absent at the deadline. The
+eight-slot name table is swamped by `xpcproxy`, so the aborting names are
+not visible. `exit_reason_get_string_desc()` (`bsd/sys/reason.h:64`,
+implemented in `kern_exit.c:1303`) can read the Objective-C abort text
+from the exit reason kcdata buffer.
+
+**New ownership lead, not yet proven.** `out/gta4l/owner-data-fixture-s5n/
+seed-tree-after.txt` lists 208 seed entries, 207 owned `99:99` and only
+the launchd policy `0:0`. The original image was populated with ownership
+ignored, so the intended root/mobile owners were not stored. XNU maps a
+reported 99 uid/gid to the caller's uid for non-root callers and root
+bypasses most checks, so many accesses still work, but explicit ownership
+checks (as launchd performs for `disabled.plist`) and containers that
+expect `mobile` ownership may refuse or abort. No measurement ties this
+to the Objective-C aborts; S5p is designed to name them before any seed
+change.
+
+S5p is printing only: it counts exec handoffs apart, ranks abnormal exits
+only, prints the leading ObjC and signal names plus the last ObjC abort
+description, and reports SpringBoard starts/exits/last status and
+`backboardd`'s pid.
+
+
+### 5.4.43 S5p build and BOOT-only flash: abnormal exits (2026-11-18)
+
+S5o showed that 340 of 619 exit-path events were exec handoffs, leaving
+166 Objective-C aborts, 8 signal exits, and SpringBoard absent while
+backboardd stayed alive. S5p is printing only: it separates handoffs,
+ranks abnormal exits only, prints the leading ObjC and signal names and
+the last ObjC abort text, and tracks SpringBoard. Storage, trust, driver
+and the S5n seed are unchanged.
+
+The board-only `gta4l-owner-root-panic2.patch` now passes
+`proc_is_shadow(p)` from `proc_prepareexit`; shadow records increment
+`xh` and return before touching `ns=`, `last=`, `abn4=`, `top3=`,
+`objc=`, `sig=` or the SpringBoard counters. Abnormal exits (`ns != 0`
+or `rv != 0`) feed a four-slot distinct-by-name ring and an eight-slot
+name table; `top3=` prints the three most frequent names, `objc=` and
+`sig=` the leading namespace-8 and namespace-2 names. Namespace 8 also
+copies up to 80 printable characters of
+`exit_reason_get_string_desc(p->p_exit_reason)` into `odesc=`.
+`proc_exec_switch_task()` counts a successful exec whose new proc name is
+`SpringBoard`; real SpringBoard exits record the last rv/ns/code. The
+deadline summary prints `sb=<starts>/<exits>/<last rv>/<ns>/<code>` and
+`bbpid=` for backboardd. The panic label is `gta4l s5p:`.
+
+Kernel `270ba1c2…` (51,806,208 bytes) is the exact packaged build; the
+exact-kernel audit `storage-abi-270ba1c2` PASSes and the ABI test PASSes.
+The build needed four passes: the archive gate compares the stable
+`out/gta4l/storage-abi` audit to the current kernel, and every relink
+changes the kernel hash because archive inputs are rebuilt. The final
+kernel was audited and copied to `out/gta4l/storage-abi`, and no kernel
+build followed that audit. Payload `b1ad173a…` (83,886,080 bytes) keeps
+the S5n seed `9303e3fc…`, the root-owned policy, trust `7416ca4f…` and
+`sheng-pmgr=2 gta4l-deadline=900 gta4l-sample=300`. BOOT
+`94abfb1c…` (85,688,320 bytes) passes 18/18 with
+`only_ramdisk_differs=true`; first 4 KiB `cbb0d675…`; xz
+`2333e0c0…`; the Mac decode matched.
+
+The preflight immediately before the flash matched p69 `78c37026…`, first
+4 KiB `f4e6e4fa…`, and the unchanged userdata/vroot/protected partitions.
+The BOOT-only flash read back the region exactly; first 4 KiB
+`cbb0d675…`, full p69
+`0f070d2005f247c95102caf8ee7267cc39adcd5f19d0ee09f873ae3f9a6769cb`.
+The block suite passed: 528 adapter, 29 verified-read, core 47 + 35
+mutation controls. One owner-triggered S5p boot is pending; do not boot
+the image twice.
+
+Expected reading: `xh` plus the eight `ns=` values equals the middle
+`ex=` value. `abn4`, `top3`, `objc`, `sig` and `odesc` name the
+aborting processes. `sb=0/0/…` means SpringBoard never exec'd;
+`sb=<n>/<m>/…` with `n>m` means it started and exited, and its last
+status plus `odesc` should say why. `bbpid=-1` would mean backboardd was
+gone at the deadline.

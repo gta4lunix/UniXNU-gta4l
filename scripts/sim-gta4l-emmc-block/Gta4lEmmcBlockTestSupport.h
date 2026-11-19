@@ -16,6 +16,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/types.h>
+#include <sys/sysmacros.h>
 
 #include "Gta4lEmmc.h"
 #include "Gta4lEmmcPlatform.h"
@@ -45,7 +47,9 @@ typedef void *thread_t;
 #define kIOStorageAccessReaderWriter 0x03
 
 #define kIOReturnSuccess ((IOReturn)0)
+#define kIOReturnError ((IOReturn)0xe00002bcu)
 #define kIOReturnBadArgument ((IOReturn)0xe00002c2u)
+#define kIOReturnNotPermitted ((IOReturn)0xe00002e2u)
 #define kIOReturnMessageTooLarge ((IOReturn)0xe00002e1u)
 #define kIOReturnNotReady ((IOReturn)0xe00002d8u)
 #define kIOReturnNotOpen ((IOReturn)0xe00002cdu)
@@ -56,6 +60,18 @@ typedef void *thread_t;
 #define kIOReturnDMAError ((IOReturn)0xe00002d4u)
 #define kIOReturnUnsupported ((IOReturn)0xe00002c7u)
 #define kIOReturnTimeout ((IOReturn)0xe00002d6u)
+
+#define OSSafeReleaseNULL(object) \
+	do { \
+		if ((object) != 0) { \
+			(object)->release(); \
+			(object) = 0; \
+		} \
+	} while (0)
+
+#define gIOBSDNameKey "BSD Name"
+#define gIOBSDMajorKey "BSD Major"
+#define gIOBSDMinorKey "BSD Minor"
 
 #define OSTypeAlloc(type) (new type)
 
@@ -112,9 +128,10 @@ class OSObject {
 public:
 	virtual ~OSObject() {}
 	virtual const void *typeTag() const = 0;
-	virtual void retain() {}
-	virtual void release() {}
+	virtual void retain() { test_retain_count++; }
+	virtual void release() { test_retain_count--; }
 	OSObject *metaCast(const char *name) const;
+	int32_t test_retain_count = 0;
 };
 
 template <typename T>
@@ -141,8 +158,14 @@ public:
 	inline static const int test_tag = 0;
 	explicit OSNumber(UInt64 value = 0) : value_(value) {}
 	const void *typeTag() const override { return &test_tag; }
+	static OSNumber *withNumber(UInt64 value, unsigned int bits = 32)
+	{
+		(void)bits;
+		return new OSNumber(value);
+	}
 	void setValue(UInt64 value) { value_ = value; }
 	UInt64 unsigned64BitValue() const { return value_; }
+	UInt32 unsigned32BitValue() const { return (UInt32)value_; }
 private:
 	UInt64 value_;
 };
@@ -152,6 +175,10 @@ public:
 	inline static const int test_tag = 0;
 	explicit OSString(const char *value = 0) : value_(value) {}
 	const void *typeTag() const override { return &test_tag; }
+	static OSString *withCString(const char *value)
+	{
+		return new OSString(value);
+	}
 	void setValue(const char *value) { value_ = value; }
 	const char *getCStringNoCopy() const { return value_; }
 	unsigned int getLength() const
@@ -166,11 +193,50 @@ class OSDictionary : public OSObject {
 public:
 	inline static const int test_tag = 0;
 	explicit OSDictionary(const char *className = 0)
-	    : class_name_(className) {}
+	    : class_name_(className), count_(0) {}
 	const void *typeTag() const override { return &test_tag; }
 	const char *className() const { return class_name_; }
+	static OSDictionary *withCapacity(unsigned int capacity)
+	{
+		(void)capacity;
+		return new OSDictionary();
+	}
+	bool setObject(const char *key, OSObject *value)
+	{
+		if ((key == 0) || (value == 0) || (count_ >= 4)) {
+			return false;
+		}
+		keys_[count_] = key;
+		values_[count_] = value;
+		count_++;
+		return true;
+	}
+	OSObject *getObject(const char *key) const
+	{
+		int index;
+
+		for (index = 0; index < count_; index++) {
+			if (strcmp(keys_[index], key) == 0) {
+				return values_[index];
+			}
+		}
+		return 0;
+	}
+	int count() const { return count_; }
+	const char *keyAt(int index) const
+	{
+		return ((index >= 0) && (index < count_)) ? keys_[index] : 0;
+	}
+	OSObject *valueAt(int index) const
+	{
+		return ((index >= 0) && (index < count_)) ?
+		    values_[index] : 0;
+	}
 private:
 	const char *class_name_;
+	const char *keys_[4];
+	OSObject *values_[4];
+	int count_;
 };
 
 class OSIterator : public OSObject {
@@ -232,7 +298,8 @@ class IOService : public OSObject {
 public:
 	inline static const int test_tag = 0;
 	IOService() : property_count_(0), provider_(0), registered_(false),
-	    uuid_value_(0), child_count_(0) {}
+	    uuid_value_(0), string_key_(0), string_value_(0),
+	    child_count_(0) {}
 	const void *typeTag() const override { return &test_tag; }	virtual bool init(OSDictionary *properties = nullptr);
 	virtual bool start(IOService *provider) { provider_ = provider; return true; }
 	virtual void stop(IOService *provider) { (void)provider; }
@@ -271,6 +338,9 @@ public:
 	bool registered_;
 	const char *uuid_value_;
 	OSString uuid_object_;
+	const char *string_key_;
+	const char *string_value_;
+	OSString string_object_;
 	OSNumber property_number_;
 	IOService *children_[8];
 	int child_count_;
@@ -437,6 +507,10 @@ public:
 	uint32_t size_reads;
 	bool open_value;
 	bool open_refuse;
+	/* APFS volume media reject a raw linear read; the whole media below
+	 * the container serves the window. This flag models that split. */
+	bool read_refuse;
+	IOReturn read_refuse_value;
 	int open_calls;
 	int close_calls;
 	IOService *open_client;
@@ -699,6 +773,11 @@ struct gta4l_test_state {
 	uint32_t deadline_arm_calls;
 	uint32_t deadline_clear_calls;
 	uint32_t deadline_last_budget_ms;
+	/* Host verify-build geometry. The production image sizes and table
+	 * lengths are compile-time constants; the host fixture replaces them
+	 * with small signed windows so runVerify can execute unmodified. */
+	uint64_t verify_image_bytes[2];
+	uint32_t verify_table_bytes[2];
 };
 
 typedef void (*gta4l_test_partition_sample_fn)(uint32_t sample,
@@ -757,6 +836,15 @@ extern gta4l_test_state gta4l_test;
 typedef IOReturn (*gta4l_test_media_read_fn)(IOMedia *media, UInt64 byteStart,
     IOMemoryDescriptor *buffer, UInt64 *actualByteCount);
 extern gta4l_test_media_read_fn gta4l_test_media_read_hook;
+
+/* Host verify-read seam. The window's verified read path forwards the
+ * span to its owner through doAsyncReadWrite; the owner is the userdata
+ * driver, so this hook stands in for its transport and can complete,
+ * fail, shorten or skip the completion callback. */
+typedef IOReturn (*gta4l_test_owner_read_fn)(IOService *owner,
+    IOMemoryDescriptor *buffer, UInt64 blockNumber, UInt64 nblks,
+    IOStorageCompletion *completion);
+extern gta4l_test_owner_read_fn gta4l_test_owner_read_hook;
 
 typedef void (*gta4l_test_deblock_sample_fn)(uint32_t call, uint32_t phase);
 extern gta4l_test_deblock_sample_fn gta4l_test_deblock_hook;

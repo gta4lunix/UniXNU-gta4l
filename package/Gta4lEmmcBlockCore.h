@@ -158,6 +158,22 @@ void gta4l_emmc_block_sha256_final(
 void gta4l_emmc_block_sha256(const uint8_t *data, uint32_t length,
     uint8_t digest[32]);
 
+/* Lifetime accepted read requests/blocks, read lock-free by the boot
+ * deadline diagnostic. */
+extern volatile uint64_t gta4l_emmc_lifetime_read_requests;
+extern volatile uint64_t gta4l_emmc_lifetime_read_blocks;
+
+/* Fixed read-LBA sketch for the boot deadline. Approximate under
+ * concurrency, bounded and payload-free. */
+#define GTA4L_EMMC_SKETCH_SLOTS 64u
+struct gta4l_emmc_sketch_entry {
+	uint64_t lba;
+	uint32_t count;
+};
+extern struct gta4l_emmc_sketch_entry gta4l_emmc_sketch[GTA4L_EMMC_SKETCH_SLOTS];
+extern volatile uint64_t gta4l_emmc_sketch_repeat;
+extern volatile uint64_t gta4l_emmc_sketch_last_lba;
+
 #ifdef __cplusplus
 }
 #endif

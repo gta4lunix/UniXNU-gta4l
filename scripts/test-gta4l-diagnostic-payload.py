@@ -11,6 +11,8 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
+import struct
 import sys
 import tempfile
 import tomllib
@@ -39,6 +41,18 @@ out.mkdir(parents=True, exist_ok=True)
 FAKE_CHECKER = '''\
 import json, sys
 print(json.dumps({'pass': True, 'payload': sys.argv[sys.argv.index('--payload') + 1]}))
+'''
+
+FAKE_PACKED = '''\
+import struct
+def inspect(path):
+    data = path.read_bytes()
+    magic, version, page, logical, count = struct.unpack_from('<8sIIQQ', data, 0)
+    if magic != b'DBRDISK1' or version != 1 or page != 4096:
+        raise ValueError('invalid packed ramdisk')
+    return {'bytes': logical, 'sha256': 'a' * 64,
+            'encoded_bytes': len(data), 'encoded_sha256': 'b' * 64,
+            'packed': True}, b''
 '''
 
 BOARD = '''\
@@ -534,6 +548,323 @@ def test_emmc_block_3_windows(base):
 def test_emmc_block_3_verify(base):
     check_observation_personality(base, 'emmc-block-3-verify', 3,
                                   'verify')
+
+
+def test_emmc_block_3_vread(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    fixture = write_fixture_manifest(base)
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-vread'
+    code = run(module, [
+        *args,
+        '--data-ramdisk-manifest', str(fixture),
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    expected = ['gta4l-emmc-block=3', 'gta4l-emmc-windows=1',
+                'gta4l-emmc-verify=1', 'gta4l-emmc-dma=1',
+                'gta4l-emmc-vread=1']
+    assert kernel_args[-5:] == expected, kernel_args
+    manifest_record = json.loads(manifest.read_text())
+    assert manifest_record['diagnostic_argument'] == ' '.join(expected)
+    assert manifest_record['data_ramdisk']['diagnostic'] == 'fs-timer-hold'
+    assert manifest_record['data_ramdisk']['hold_after_success'] is True
+    print('PASS emmc-block-3-vread maps to the five-token VREAD rung')
+
+
+def test_emmc_block_3_root(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    record = base / 'argv.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    index = args.index('--data-ramdisk')
+    del args[index:index + 2]
+    index = args.index('rd=md0')
+    del args[index - 1:index + 1]
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-root'
+    code = run(module, [
+        *args,
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    argv = json.loads(record.read_text())
+    assert '--data-ramdisk' not in argv
+    assert '--data-ramdisk-manifest' not in argv
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    expected = ['gta4l-emmc-block=3', 'gta4l-emmc-windows=1',
+                'gta4l-emmc-verify=1', 'gta4l-emmc-dma=1',
+                'gta4l-emmc-root=1']
+    assert kernel_args[-5:] == expected, kernel_args
+    assert 'rd=md0' not in kernel_args
+    manifest_record = json.loads(manifest.read_text())
+    assert manifest_record['diagnostic_argument'] == ' '.join(expected)
+    assert manifest_record['data_ramdisk'] is None
+    print('PASS emmc-block-3-root maps to the five-token root rung without a '
+          'Data ramdisk')
+
+
+def test_emmc_block_3_root_rejects_data_ramdisk(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-root'
+    try:
+        run(module, [
+            *args,
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'do not pass --data-ramdisk' in str(error), error
+    else:
+        raise AssertionError('the root personality accepted a Data ramdisk')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS emmc-block-3-root refuses a Data ramdisk')
+
+
+def test_emmc_block_3_root_data(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    packed_module = unixnu / 'drivers/DarwinBoot/Test'
+    packed_module.mkdir(parents=True)
+    (packed_module / 'packed_ramdisk.py').write_text(FAKE_PACKED)
+    packed = base / 'owner-data-32.dbr'
+    packed.write_bytes(struct.pack('<8sIIQQ', b'DBRDISK1', 1, 4096,
+                                   33554432, 0))
+    seed = base / 'seed.json'
+    seed.write_text(json.dumps({
+        'sha256': 'a' * 64,
+        'bytes': 33554432,
+        'volume_uuid': 'A3168F05-0F99-42FE-AA9F-F0276C1AFBB1',
+        'seed': 'test owner Data',
+        'guest_mutable': True,
+        'owner_keybag_created': False,
+        'os_inputs_modified': False,
+    }) + '\n')
+    record = base / 'argv.json'
+    board_record = base / 'board.json'
+    os.environ['FAKE_UNIXNU_RECORD'] = str(record)
+    os.environ['FAKE_UNIXNU_BOARD'] = str(board_record)
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--data-ramdisk') + 1] = str(packed)
+    index = args.index('rd=md0')
+    del args[index - 1:index + 1]
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-root-data'
+    args += ['--data-seed-manifest', str(seed)]
+    code = run(module, [
+        *args,
+        '--kernel', str(kernel),
+        '--output', str(output),
+        '--manifest', str(manifest),
+    ])
+    assert code == 0
+    transformed = tomllib.loads(board_record.read_text())
+    assert transformed['payload']['adt']['packed_data_ramdisk'] is True
+    argv = json.loads(record.read_text())
+    assert '--data-ramdisk' in argv
+    kernel_args = [argv[index + 1] for index, value in enumerate(argv)
+                   if value == '--kernel-arg']
+    expected = ['gta4l-emmc-block=3', 'gta4l-emmc-windows=1',
+                'gta4l-emmc-verify=1', 'gta4l-emmc-dma=1',
+                'gta4l-emmc-root=1']
+    assert kernel_args[-5:] == expected, kernel_args
+    assert 'rd=md0' not in kernel_args
+    manifest_record = json.loads(manifest.read_text())
+    assert manifest_record['packed_data_ramdisk'] is True
+    assert manifest_record['data_seed']['volume_uuid'] == \
+        'A3168F05-0F99-42FE-AA9F-F0276C1AFBB1'
+    assert manifest_record['data_seed']['packed']['packed'] is True
+    print('PASS emmc-block-3-root-data maps to the five-token root rung with '
+          'a packed owner Data seed')
+
+
+def test_emmc_block_3_root_data_rejects_raw(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    seed = base / 'seed.json'
+    seed.write_text(json.dumps({
+        'sha256': hashlib.sha256(data.read_bytes()).hexdigest(),
+        'bytes': data.stat().st_size,
+        'volume_uuid': 'A3168F05-0F99-42FE-AA9F-F0276C1AFBB1',
+        'seed': 'raw',
+        'guest_mutable': True,
+        'owner_keybag_created': False,
+        'os_inputs_modified': False,
+    }) + '\n')
+    output = base / 'payload.img'
+    manifest = base / 'payload.manifest.json'
+    module = load_builder(checker)
+    args = common_arguments(unixnu, uefi, device, data, trust)
+    args[args.index('--diagnostic') + 1] = 'emmc-block-3-root-data'
+    args += ['--data-seed-manifest', str(seed)]
+    try:
+        run(module, [
+            *args,
+            '--kernel', str(kernel),
+            '--output', str(output),
+            '--manifest', str(manifest),
+        ])
+    except SystemExit as error:
+        assert 'packed DBRDISK1 seed' in str(error), error
+    else:
+        raise AssertionError('root-data accepted a raw Data seed')
+    assert not output.exists()
+    assert not manifest.exists()
+    print('PASS emmc-block-3-root-data refuses a raw Data seed')
+
+
+def test_emmc_block_3_root_data_launchd_policy(base):
+    unixnu, uefi, device, kernel, data, trust, checker = make_tree(base)
+    os.environ['FAKE_UNIXNU_RECORD'] = str(base / 'argv.json')
+    os.environ['FAKE_UNIXNU_BOARD'] = str(base / 'board.json')
+    packed_module = unixnu / 'drivers/DarwinBoot/Test'
+    packed_module.mkdir(parents=True)
+    (packed_module / 'packed_ramdisk.py').write_text(FAKE_PACKED)
+    packed = base / 'owner-data-32.dbr'
+    packed.write_bytes(struct.pack('<8sIIQQ', b'DBRDISK1', 1, 4096,
+                                   33554432, 0))
+    module = load_builder(checker)
+    policy_bytes = plistlib.dumps({'com.apple.watchdogd': True},
+                                  fmt=plistlib.FMT_BINARY)
+    policy_sha = hashlib.sha256(policy_bytes).hexdigest()
+    seed_path = base / 'seed.json'
+    report_path = base / 'seed-build.json'
+    report = {
+        'source_raw_sha256': module.BASE_SEED_RAW_SHA256,
+        'output_raw_logical_bytes': 33554432,
+        'output_raw_sha256': 'a' * 64,
+        'output_dbr_sha256': hashlib.sha256(packed.read_bytes()).hexdigest(),
+        'source_regular_files': 40,
+        'source_regular_bytes': 611715 + len(policy_bytes),
+        'tree_added': ['/db/com.apple.xpc.launchd/disabled.plist'],
+        'tree_removed': [],
+        'tree_changed': [],
+        'policy': {
+            'path': '/private/var/db/com.apple.xpc.launchd/disabled.plist',
+            'plist': {'com.apple.watchdogd': True},
+            'uid': 0,
+            'gid': 0,
+            'mode': '0644',
+            'bytes': len(policy_bytes),
+        },
+        'policy_bytes_sha256': policy_sha,
+        'run_as_uid': 0,
+        'mounted_with_owners': True,
+    }
+    report_path.write_text(json.dumps(report, indent=2) + '\n')
+    report_sha = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    manifest = {
+        'sha256': 'a' * 64,
+        'bytes': 33554432,
+        'volume_uuid': 'A3168F05-0F99-42FE-AA9F-F0276C1AFBB1',
+        'seed': 'test owner Data with the watchdogd override',
+        'guest_mutable': True,
+        'owner_keybag_created': False,
+        'os_inputs_modified': False,
+        'source_regular_files': 40,
+        'source_regular_bytes': 611715 + len(policy_bytes),
+        'launchd_disabled': {
+            'path': '/private/var/db/com.apple.xpc.launchd/disabled.plist',
+            'plist': {'com.apple.watchdogd': True},
+            'uid': 0,
+            'gid': 0,
+            'mode': '0644',
+            'bytes': len(policy_bytes),
+            'sha256': policy_sha,
+            'tree_added': ['/db/com.apple.xpc.launchd/disabled.plist'],
+            'tree_removed': [],
+            'tree_changed': [],
+            'builder_report_sha256': report_sha,
+        },
+    }
+    seed_path.write_text(json.dumps(manifest) + '\n')
+
+    def try_build(name, manifest_text, report_text, extra):
+        path = base / f'{name}.json'
+        path.write_text(manifest_text)
+        report_arg = []
+        if report_text is not None:
+            report = base / f'{name}-report.json'
+            report.write_text(report_text)
+            report_arg = ['--data-seed-report', str(report)]
+        output = base / f'{name}.img'
+        out_manifest = base / f'{name}.manifest.json'
+        args = common_arguments(unixnu, uefi, device, data, trust)
+        args[args.index('--data-ramdisk') + 1] = str(packed)
+        index = args.index('rd=md0')
+        del args[index - 1:index + 1]
+        args[args.index('--diagnostic') + 1] = 'emmc-block-3-root-data'
+        args += ['--data-seed-manifest', str(path), *report_arg, *extra]
+        try:
+            code = run(module, [
+                *args,
+                '--kernel', str(kernel),
+                '--output', str(output),
+                '--manifest', str(out_manifest),
+            ])
+        except SystemExit as error:
+            return str(error)
+        assert code == 0
+        return json.loads(out_manifest.read_text())
+
+    built = try_build('good', json.dumps(manifest) + '\n',
+                      report_path.read_text(),
+                      ['--require-launchd-watchdog-policy'])
+    assert isinstance(built, dict), built
+    assert built['data_seed']['launchd_disabled']['uid'] == 0, built
+    assert built['data_seed']['report']['sha256'] == report_sha, built
+    print('PASS root-data accepts exactly the root-owned watchdogd override')
+
+    missing = try_build('missing', json.dumps(manifest) + '\n', None, [])
+    assert 'requires --data-seed-report' in missing, missing
+    changed = dict(report)
+    changed['tree_changed'] = ['/db/com.apple.xpc.launchd']
+    changed_report = json.dumps(changed, indent=2) + '\n'
+    seed_with_changed_report = json.loads(json.dumps(manifest))
+    seed_with_changed_report['launchd_disabled'][
+        'builder_report_sha256'] = hashlib.sha256(
+            changed_report.encode()).hexdigest()
+    wrong = try_build('changed', json.dumps(seed_with_changed_report) + '\n',
+                      changed_report, ['--require-launchd-watchdog-policy'])
+    assert 'removed or changed' in wrong, wrong
+    nonroot = json.loads(json.dumps(manifest))
+    nonroot['launchd_disabled']['uid'] = 501
+    bad = try_build('nonroot', json.dumps(nonroot) + '\n',
+                    report_path.read_text(),
+                    ['--require-launchd-watchdog-policy'])
+    assert 'uid must be 0' in bad, bad
+    plain = json.loads(json.dumps(manifest))
+    del plain['launchd_disabled']
+    required = try_build('plain', json.dumps(plain) + '\n', None,
+                         ['--require-launchd-watchdog-policy'])
+    assert 'needs the exact' in required, required
+    print('PASS root-data refuses a missing report, a changed tree and a '
+          'non-root policy')
 
 
 def test_emmc_block_3_live(base):
@@ -1580,6 +1911,89 @@ def test_diagnostic_contract(_base):
         'gta4l-emmc-block=3 gta4l-emmc-bulk=1 gta4l-emmc-dma=1 '
         'gta4l-emmc-live=1', 'emmc-block-3')
     assert not plain_live_expected['emmc-block-3_diagnostic_selected']
+    good_verify = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-windows=1 gta4l-emmc-verify=1 '
+        'gta4l-emmc-dma=1', 'emmc-block-3-verify')
+    assert all(good_verify.values()), good_verify
+    missing_verify = checks(
+        'gta4l-emmc-block=3 gta4l-emmc-windows=1 gta4l-emmc-dma=1',
+        'emmc-block-3-verify')
+    assert not missing_verify['emmc-block-3-verify_diagnostic_selected'], \
+        missing_verify
+    root_args = ('gta4l-emmc-block=3 gta4l-emmc-windows=1 '
+                 'gta4l-emmc-verify=1 gta4l-emmc-dma=1 '
+                 'gta4l-emmc-root=1')
+    root = checks(root_args, 'emmc-block-3-root')
+    assert all(root.values()), root
+    root_rd = checks(root_args + ' rd=md0', 'emmc-block-3-root')
+    assert not root_rd['emmc-block-3-root_no_ramdisk_override'], root_rd
+    root_rootdev = checks(root_args + ' rootdev=md0', 'emmc-block-3-root')
+    assert not root_rootdev[
+        'emmc-block-3-root_no_ramdisk_override'], root_rootdev
+    root_block_one = checks(
+        root_args.replace('gta4l-emmc-block=3', 'gta4l-emmc-block=1'),
+        'emmc-block-3-root')
+    assert not root_block_one['root_requires_block_three'], root_block_one
+    assert not root_block_one[
+        'emmc-block-3-root_diagnostic_selected'], root_block_one
+    root_missing_windows = checks(
+        root_args.replace('gta4l-emmc-windows=1 ', ''),
+        'emmc-block-3-root')
+    assert not root_missing_windows[
+        'root_requires_windows_verify_dma'], root_missing_windows
+    assert not root_missing_windows[
+        'emmc-block-3-root_diagnostic_selected'], root_missing_windows
+    root_missing_verify = checks(
+        root_args.replace('gta4l-emmc-verify=1 ', ''),
+        'emmc-block-3-root')
+    assert not root_missing_verify[
+        'root_requires_windows_verify_dma'], root_missing_verify
+    assert not root_missing_verify[
+        'emmc-block-3-root_diagnostic_selected'], root_missing_verify
+    root_missing_dma = checks(
+        root_args.replace('gta4l-emmc-dma=1', ''),
+        'emmc-block-3-root')
+    assert not root_missing_dma[
+        'root_requires_windows_verify_dma'], root_missing_dma
+    assert not root_missing_dma[
+        'emmc-block-3-root_diagnostic_selected'], root_missing_dma
+    root_vread = checks(root_args + ' gta4l-emmc-vread=1',
+                        'emmc-block-3-root')
+    assert not root_vread['root_excludes_vread'], root_vread
+    assert not root_vread[
+        'emmc-block-3-root_diagnostic_selected'], root_vread
+    root_duplicate = checks(root_args + ' gta4l-emmc-root=1',
+                           'emmc-block-3-root')
+    assert not root_duplicate['at_most_one_root_token'], root_duplicate
+    assert not root_duplicate[
+        'emmc-block-3-root_diagnostic_selected'], root_duplicate
+    root_value = checks(root_args.replace('gta4l-emmc-root=1',
+                                          'gta4l-emmc-root=2'),
+                        'emmc-block-3-root')
+    assert not root_value['root_value_one'], root_value
+    assert not root_value[
+        'emmc-block-3-root_diagnostic_selected'], root_value
+    root_bulk = checks(root_args + ' gta4l-emmc-bulk=1',
+                       'emmc-block-3-root')
+    assert not root_bulk['root_no_other_modifier'], root_bulk
+    assert not root_bulk[
+        'emmc-block-3-root_diagnostic_selected'], root_bulk
+    root_no_block = checks(
+        'gta4l-emmc-windows=1 gta4l-emmc-verify=1 gta4l-emmc-dma=1 '
+        'gta4l-emmc-root=1', 'emmc-block-3-root')
+    assert not root_no_block['exactly_one_diagnostic_argument'], \
+        root_no_block
+    assert not root_no_block[
+        'emmc-block-3-root_diagnostic_selected'], root_no_block
+    root_on_windows = checks(root_args, 'emmc-block-3-windows')
+    assert not root_on_windows[
+        'emmc-block-3-windows_diagnostic_selected'], root_on_windows
+    root_data = checks(root_args, 'emmc-block-3-root-data')
+    assert all(root_data.values()), root_data
+    root_data_rd = checks(root_args + ' rd=md0',
+                          'emmc-block-3-root-data')
+    assert not root_data_rd[
+        'emmc-block-3-root-data_no_ramdisk_override'], root_data_rd
     empty = checks('')
     assert not empty['exactly_one_diagnostic_argument']
     assert not empty['unixnu_toml_has_xnu_args']
@@ -1602,7 +2016,13 @@ def main():
              test_emmc_block_3_consume, test_emmc_block_3_width4,
              test_emmc_block_3_widthhold, test_emmc_block_3_widthpub,
              test_emmc_block_3_speed, test_emmc_block_3_bulk,
-             test_emmc_block_3_windows, test_emmc_block_3_live,
+             test_emmc_block_3_windows, test_emmc_block_3_vread,
+             test_emmc_block_3_root,
+             test_emmc_block_3_root_rejects_data_ramdisk,
+             test_emmc_block_3_root_data,
+             test_emmc_block_3_root_data_rejects_raw,
+             test_emmc_block_3_root_data_launchd_policy,
+             test_emmc_block_3_live,
              test_partobs_rejects_early_panic_fixture,
              test_partcmp_rejects_early_panic_fixture,
              test_partread_rejects_early_panic_fixture,

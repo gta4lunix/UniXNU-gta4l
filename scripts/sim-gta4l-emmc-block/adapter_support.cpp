@@ -9,6 +9,7 @@ static uint8_t gta4l_test_table_shadow[GTA4L_EMMC_BLOCK_DMA_TABLE_BYTES];
 static uint8_t gta4l_test_buffer_shadow[
     GTA4L_EMMC_BLOCK_BULK_CHUNK_BYTES + PAGE_SIZE];
 gta4l_test_media_read_fn gta4l_test_media_read_hook;
+gta4l_test_owner_read_fn gta4l_test_owner_read_hook;
 gta4l_test_deblock_sample_fn gta4l_test_deblock_hook;
 gta4l_test_breakup_sample_fn gta4l_test_breakup_hook;
 gta4l_test_multi_sample_fn gta4l_test_multi_hook;
@@ -35,6 +36,12 @@ gta4l_test_reset(void)
 	gta4l_test.boot_args = "";
 	gta4l_test.init_result = 0;
 	gta4l_test.capacity_blocks = 61071360u;
+	gta4l_test.verify_image_bytes[0] = 6077580800ull;
+	gta4l_test.verify_image_bytes[1] = 3303014400ull;
+	gta4l_test.verify_table_bytes[0] =
+	    GTA4L_EMMC_BLOCK_VERIFY_OS_TABLE_BYTES;
+	gta4l_test.verify_table_bytes[1] =
+	    GTA4L_EMMC_BLOCK_VERIFY_SYSTEMOS_TABLE_BYTES;
 	/* One valid bypass entry for the SDHC stream is the neutral gate
 	 * state; scenarios override the registers for the other rows. */
 	gta4l_test.smmu_regs[GTA4L_EMMC_BLOCK_SMMU_REG_ID0 / 4u] = 1u;
@@ -145,6 +152,7 @@ gta4l_test_reset(void)
 	gta4l_test.widthhold_media_block_delta = 0;
 	gta4l_test.widthhold_media_extra = 0;
 	gta4l_test_media_read_hook = 0;
+	gta4l_test_owner_read_hook = 0;
 	gta4l_test_deblock_hook = 0;
 	gta4l_test_breakup_hook = 0;
 	gta4l_test_multi_hook = 0;
@@ -1483,8 +1491,11 @@ IOService::messageClients(UInt32 type, void *argument)
 bool
 IOService::setProperty(const char *key, const char *value)
 {
-	(void)key;
-	(void)value;
+	if ((key == 0) || (value == 0)) {
+		return false;
+	}
+	string_key_ = key;
+	string_value_ = value;
 	return true;
 }
 
@@ -1528,6 +1539,11 @@ IOService::getProperty(const char *key) const
 			    uuid_value_);
 			return const_cast<OSString *>(&uuid_object_);
 		}
+		if ((string_key_ != 0) && (strcmp(key, string_key_) == 0)) {
+			const_cast<IOService *>(this)->string_object_.setValue(
+			    string_value_);
+			return const_cast<OSString *>(&string_object_);
+		}
 		for (index = 0; index < property_count_; index++) {
 			if ((properties_[index].key != 0) &&
 			    (strcmp(properties_[index].key, key) == 0)) {
@@ -1561,6 +1577,55 @@ IOService::getChildIterator(const IORegistryPlane *plane) const
 		items[count++] = children_[index];
 	}
 	return new OSIterator(items, count);
+}
+
+static bool
+gta4l_test_media_matches(IOMedia *media, OSDictionary *filter)
+{
+	int index;
+
+	if (filter == 0) {
+		return true;
+	}
+	for (index = 0; index < filter->count(); index++) {
+		const char *key = filter->keyAt(index);
+		OSObject *wanted = filter->valueAt(index);
+		OSObject *actual;
+		OSString *wantedString;
+		OSString *actualString;
+		OSNumber *wantedNumber;
+		OSNumber *actualNumber;
+
+		if ((key == 0) || (wanted == 0) || (media == 0)) {
+			return false;
+		}
+		actual = media->getProperty(key);
+		if (actual == 0) {
+			return false;
+		}
+		wantedString = OSDynamicCast(OSString, wanted);
+		if (wantedString != 0) {
+			actualString = OSDynamicCast(OSString, actual);
+			if ((actualString == 0) ||
+			    (strcmp(wantedString->getCStringNoCopy(),
+			    actualString->getCStringNoCopy()) != 0)) {
+				return false;
+			}
+			continue;
+		}
+		wantedNumber = OSDynamicCast(OSNumber, wanted);
+		if (wantedNumber != 0) {
+			actualNumber = OSDynamicCast(OSNumber, actual);
+			if ((actualNumber == 0) ||
+			    (wantedNumber->unsigned64BitValue() !=
+			    actualNumber->unsigned64BitValue())) {
+				return false;
+			}
+			continue;
+		}
+		return false;
+	}
+	return true;
 }
 
 OSIterator *
@@ -1634,10 +1699,23 @@ IOService::getMatchingServices(OSDictionary *matching)
 		}
 		return new OSIterator(items, visible);
 	}
-	for (index = 0; index < gta4l_test_media_count; index++) {
-		items[index] = gta4l_test_media[index];
+	{
+		OSDictionary *filter = (matching != 0) ?
+		    OSDynamicCast(OSDictionary,
+		    matching->getObject("IOPropertyMatch")) : 0;
+		int matched = 0;
+
+		for (index = 0; index < gta4l_test_media_count; index++) {
+			IOMedia *media = gta4l_test_media[index];
+
+			if ((media != 0) &&
+			    gta4l_test_media_matches(media, filter) &&
+			    (matched < GTA4L_TEST_MAX_MEDIA)) {
+				items[matched++] = media;
+			}
+		}
+		return new OSIterator(items, matched);
 	}
-	return new OSIterator(items, gta4l_test_media_count);
 }
 
 IOMedia::IOMedia()
@@ -1651,6 +1729,8 @@ IOMedia::IOMedia()
       size_reads(0),
       open_value(false),
       open_refuse(false),
+      read_refuse(false),
+      read_refuse_value(kIOReturnSuccess),
       open_calls(0),
       close_calls(0),
       open_client(0),
@@ -1767,7 +1847,7 @@ IOMedia::getProperty(const char *key) const
 		    writable_value);
 		return const_cast<OSBoolean *>(&writable_object);
 	}
-	return 0;
+	return IOService::getProperty(key);
 }
 
 struct gta4l_test_media_completion {
@@ -2647,6 +2727,9 @@ IOMedia::read(IOService *client, UInt64 byteStart,
 	(void)client;
 	if (!open_value) {
 		return kIOReturnNotOpen;
+	}
+	if (read_refuse) {
+		return read_refuse_value;
 	}
 	if ((buffer == 0) || (buffer->address() == 0) ||
 	    (buffer->getLength() == 0) ||
